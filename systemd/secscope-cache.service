@@ -1,0 +1,19 @@
+[Unit]
+Description=SecScope local cache daemon
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/opt/secscope/native/secscope-cache/cache-daemon --socket /run/secscope-cache/cache.sock --storage /var/lib/secscope/cache.snapshot
+RuntimeDirectory=secscope-cache
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateNetwork=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/run/secscope-cache /var/lib/secscope
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+// Non-executable mixed-language capability fixture.
+const supplied = req.body.opaque;
+const decoded = atob(supplied);
+child_process.exec(decoded);
+fs.writeFile('/disabled/output', decoded, function () {});
+// Python text: request.data -> base64 -> subprocess.Popen is represented only as text.

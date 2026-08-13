@@ -1,0 +1,7 @@
+[
+  {"name":"normal_deploy_plus_independent_cron","events":[{"id":"f1","entity":"process:boot:100:10:deploy","domain":"FILE"},{"id":"p1","entity":"process:boot:900:20:cron","domain":"PERSISTENCE"}],"expected_chain":false},
+  {"name":"same_path_different_process_instances","events":[{"id":"e1","entity":"process:boot:101:10:/bin/sh","domain":"PROCESS"},{"id":"e2","entity":"process:boot:101:30:/bin/sh","domain":"NETWORK"}],"expected_chain":false},
+  {"name":"pid_reuse","events":[{"id":"e1","entity":"process:boot:444:10:/usr/bin/php","domain":"FILE"},{"id":"e2","entity":"process:boot:444:90:/usr/bin/php","domain":"NETWORK"}],"expected_chain":false},
+  {"name":"http_time_mismatch","events":[{"id":"h1","entity":"web:site1:/a.php:client","domain":"WEB","time":100},{"id":"f1","entity":"file:dev:ino:/a.php:hash","domain":"FILE","time":5000}],"expected_chain":false},
+  {"name":"same_writer_execute_connect_persist","events":[{"id":"f1","entity":"process:boot:77:12:/usr/bin/php","domain":"FILE"},{"id":"p1","entity":"process:boot:77:12:/usr/bin/php","domain":"PROCESS"},{"id":"n1","entity":"process:boot:77:12:/usr/bin/php","domain":"NETWORK"},{"id":"r1","entity":"process:boot:77:12:/usr/bin/php","domain":"PERSISTENCE"}],"expected_chain":true}
+]

@@ -1,0 +1,10 @@
+title = "SecScope gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allow third-party YARA malware-signature strings that intentionally look like keys"
+paths = [
+  '''.*rules/yara-forge-core-20260809/yara-rules-core\.yar$'''
+]

@@ -1,0 +1,6 @@
+// Non-compilable, non-executable ASP.NET structure fixture.
+var opaque = Request.InputStream;
+var bytes = Convert.FromBase64String(opaque.ToString());
+var assembly = Assembly.Load(bytes);
+Process.Start("disabled-command", opaque.ToString());
+RegisterModule(assembly.GetType("MockModule"));

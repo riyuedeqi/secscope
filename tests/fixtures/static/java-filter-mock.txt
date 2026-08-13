@@ -1,0 +1,6 @@
+// Non-compilable, non-executable mock event/structure.
+HttpServletRequest request = MOCK_ONLY;
+String value = request.getParameter("opaque");
+context.addFilter("late-filter", generatedClass);
+ClassLoader.defineClass(decodedBytes);
+Runtime.getRuntime().exec(value);

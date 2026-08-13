@@ -1,0 +1,63 @@
+# systemd EnvironmentFile for SecScope
+SECSCOPE_RETENTION_DAYS=-1
+SECSCOPE_HIGH_RETENTION_DAYS=-1
+SECSCOPE_RESOLVE_AFTER_MISSES=3
+SECSCOPE_HOST_ROLE=auto
+SECSCOPE_MODE=Hunt
+# 扫描档位：fast-hunt（高频）、daily-hunt（中频）、full（低频完整）；--mode 仍兼容旧报告视图
+SECSCOPE_PROFILE=daily-hunt
+# native scanner: auto 预检可用性并在未通过时回退 Bash；on 预检失败则明确退出；off 禁用
+SECSCOPE_NATIVE_SCANNER=auto
+SECSCOPE_NATIVE_WORKERS=4
+SECSCOPE_NATIVE_MAX_MEMORY_MB=256
+SECSCOPE_NATIVE_MAX_LOAD_FACTOR=1.5
+SECSCOPE_NATIVE_STAGE_TIMEOUT=120
+SECSCOPE_FAST_ENABLED=true
+SECSCOPE_FAST_INTERVAL=30min
+SECSCOPE_DAILY_ENABLED=true
+SECSCOPE_DAILY_INTERVAL=2h
+SECSCOPE_FULL_ENABLED=true
+SECSCOPE_FULL_INTERVAL=1d
+# 安装后首次只触发一个档位：none、fast-hunt、daily-hunt 或 full
+SECSCOPE_FIRST_RUN_PROFILE=none
+# 高优先级 profile 等待低优先级锁的最长时间；低优先级遇高优先级直接跳过
+SECSCOPE_PROFILE_LOCK_WAIT_SECONDS=300
+# 低资源主机的可用内存门槛和负载预算
+SECSCOPE_MIN_AVAILABLE_MB=256
+SECSCOPE_MAX_LOAD_FACTOR=4
+SECSCOPE_SCHEDULE_MODE=interval
+SECSCOPE_SCHEDULE_TIME=02:00
+# SECSCOPE_SCHEDULE_MODE=cron 时使用；格式为标准 Linux cron 五字段：分 时 日 月 周
+SECSCOPE_SCHEDULE_CRON=0 */1 * * *
+SECSCOPE_AUTH_BEHAVIOR_ENABLED=true
+SECSCOPE_AUTH_MAX_EVENTS=200
+SECSCOPE_EVENT_WINDOW_MINUTES=120
+# 可选：显式 Falco JSON 日志；留空时自动检查常见路径
+# SECSCOPE_FALCO_LOG=/var/log/falco/events.json
+SECSCOPE_AUDIT_LOG=/var/log/audit/audit.log
+# Web access log：可用逗号分隔的精确路径或 glob 覆盖自动发现路径。
+# SECSCOPE_WEB_ACCESS_LOG_PATHS=/data/logs/nginx/access.log*,/srv/tomcat/logs/localhost_access_log*.txt
+SECSCOPE_WEB_ACCESS_LOG_MAX_LINES=5000
+# auto/nginx_combined/apache_combined/json/tomcat
+SECSCOPE_WEB_ACCESS_LOG_FORMAT=auto
+# YARA 模式：auto 按 profile 映射 fast=disabled、daily=standard、full=full；forensic 仅用于人工维护窗
+SECSCOPE_YARA_MODE=auto
+# 安装包内置 YARA Forge Core；可替换为客户自己的规则文件或目录
+SECSCOPE_YARA_RULES=/opt/secscope/rules/yara-forge-core-20260809
+# SECSCOPE_YARA_FILE_TIMEOUT=8
+# SECSCOPE_YARA_TOTAL_TIMEOUT=120
+# SECSCOPE_YARA_MAX_FILES=600
+# SECSCOPE_YARA_MAX_RULE_SOURCES=64
+# SECSCOPE_YARA_RULE_MAX_DEPTH=3
+# 深度 Java Agent 源码默认不启用；仅维护窗明确配置
+SECSCOPE_JAVA_DEEP_MODE=false
+# 维护窗口格式：DAY@HH:MM-HH:MM，多个用逗号；DAY 为 MON..SUN 或 *
+SECSCOPE_MAINTENANCE_WINDOWS=
+SECSCOPE_CONTEXT_ALLOW_FILE=/etc/secscope/context.allow
+# 仅保留旧配置键的兼容性；v1.0 会忽略该值，不会发起任何出站请求。
+# SECSCOPE_WEBHOOK_URL=
+# SECSCOPE_STATE_DIR=/var/lib/secscope
+# SECSCOPE_FILE_SCAN_CONFIG=/etc/secscope/file-scan.config
+# 默认报告根目录为程序目录下的 reports/；如需覆盖可显式指定
+# SECSCOPE_REPORT_ROOT=/opt/secscope/reports
+# fast-hunt 内置文件扫描预算：MaxFiles=800, MaxDepth=4, MaxHashMB=30, TimeoutSeconds=45, SmallFilePriorityKB=300

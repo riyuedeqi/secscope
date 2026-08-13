@@ -1,0 +1,4 @@
+# value|expires(YYYY-MM-DD)|owner|note
+# 8443|2027-12-31|app-owner|approved application listener
+# TCP/8000-8999|2027-12-31|platform|approved TCP service range
+# UDP/50000-50100|2027-12-31|endpoint-team|approved UDP bound range

@@ -1,0 +1,16 @@
+[Unit]
+Description=SecScope legacy compatibility service (daily-hunt)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/secscope/secscope.conf
+ExecStart=/opt/secscope/secscope.sh --scheduled --profile daily-hunt
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=19min
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=false

@@ -1,0 +1,4 @@
+// Benign generated-class counter-evidence fixture.
+net.sf.cglib.proxy.Enhancer enhancer = new Enhancer();
+Class<?> proxy = enhancer.createClass();
+// EnhancerByCGLIB and ByteBuddy generated classes may have no CodeSource.

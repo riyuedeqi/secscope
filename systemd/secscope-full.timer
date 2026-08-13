@@ -1,0 +1,11 @@
+[Unit]
+Description=SecScope full scan every day
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1d
+Persistent=true
+Unit=secscope@full.service
+
+[Install]
+WantedBy=timers.target

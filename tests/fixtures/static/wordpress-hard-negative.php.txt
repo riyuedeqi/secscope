@@ -1,0 +1,7 @@
+<?php
+/* Non-executable fixture: representative benign framework decoding path. */
+function decode_signed_license($signed_value, $public_key) {
+    $decoded = base64_decode($signed_value, true);
+    return openssl_verify($decoded, 'fixed-license', $public_key);
+}
+?>

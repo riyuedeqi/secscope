@@ -1,0 +1,16 @@
+[Unit]
+Description=SecScope layered scan (%i)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/secscope/secscope.conf
+ExecStart=/opt/secscope/secscope.sh --scheduled --profile %i
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=3h
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=false

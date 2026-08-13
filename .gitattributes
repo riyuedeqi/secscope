@@ -1,0 +1,2 @@
+# Third-party generated rule bundle; keep diffs compact on GitHub.
+rules/yara-forge-core-20260809/yara-rules-core.yar linguist-generated=true -diff

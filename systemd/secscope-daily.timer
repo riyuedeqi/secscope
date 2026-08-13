@@ -1,0 +1,11 @@
+[Unit]
+Description=SecScope daily-hunt every 2 hours
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2h
+Persistent=true
+Unit=secscope@daily-hunt.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=SecScope fast-hunt every 30 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=30min
+Persistent=true
+Unit=secscope@fast-hunt.service
+
+[Install]
+WantedBy=timers.target

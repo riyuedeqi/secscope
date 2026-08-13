@@ -1,0 +1,9 @@
+[
+  {"name":"normal_jvm_dynamic_proxy","runtime":"JVM","mapping":"anonymous-rx","counter_evidence":["CGLIB","dynamic-proxy"],"expected":"OBSERVE"},
+  {"name":"legal_generated_no_codesource","runtime":"JVM","code_source":"","counter_evidence":["lambda","JDK-generated"],"expected":"OBSERVE"},
+  {"name":"late_filter_mock","runtime":"JVM","registration":"Filter after startup","code_source":"","mock":true,"expected":"ANOMALY"},
+  {"name":"dotnet_dynamic_assembly_mock","runtime":"CLR","location":"","dynamic":true,"mock":true,"expected":"ANOMALY"},
+  {"name":"legal_jit_rwx","runtime":"V8/CLR/JVM","mapping":"anonymous-rwx","counter_evidence":["known-jit-runtime"],"expected":"OBSERVE"},
+  {"name":"memfd_public_connection","runtime":"native","mapping":"memfd:payload (deleted)","public_connection":true,"expected":"HIGH"},
+  {"name":"privileged_web_temp_so","runtime":"native","mapping":"/tmp/module.so","web_process":true,"euid":0,"expected":"HIGH"}
+]

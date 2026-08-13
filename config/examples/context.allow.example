@@ -1,0 +1,5 @@
+# SecScope v1.0-linux contextual allowlist
+# path_glob|user|parent|args_regex|target_glob|owner|expires(YYYY-MM-DD)|note
+# 至少限定 path，并在 user/parent/args/target 中再限定一项；owner 与 expires 必填。
+/usr/bin/python3|jenkins|java|^/opt/ci/scripts/deploy[.]py --env prod$|10.20.*|platform-team|2027-06-30|批准的 Jenkins 发布任务
+/usr/bin/curl|deploy|bash|^curl -fsS https://repo[.]example/health$|203.0.113.10:*|ops-team|2027-03-31|发布后健康检查

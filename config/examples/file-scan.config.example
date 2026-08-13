@@ -1,0 +1,26 @@
+# SecScope Linux file monitoring configuration
+# 数值预算默认由 --profile 设置；取消注释后会覆盖所有 profile 的对应预算。
+# MaxFiles=3000
+# MaxDepth=5
+# MaxHashMB=100
+# TimeoutSeconds=120
+# RecentDays=7
+# 新增且小于该阈值的文件优先进入扫描配额并置顶展示。
+# SmallFilePriorityKB=300
+# 候选分数为适用权重之和；同分按 mtime 新、文件小、路径字典序排列。
+PriorityAddedSmall=100
+PriorityModified=80
+PriorityRuntimeExe=120
+PriorityRuntimeMapped=110
+PriorityWebRoot=70
+PriorityTmpExecutable=90
+PriorityPersistencePath=100
+PriorityRecent=50
+PrioritySuspiciousExtension=40
+ScanRoots=/tmp,/var/tmp,/dev/shm,/etc,/usr/local/bin,/usr/local/sbin,/opt,/srv/www,/var/www,/usr/share/nginx,/home,/root
+Extensions=sh,bash,zsh,py,pl,rb,php,phtml,jsp,jspx,asp,aspx,js,jpg,jpeg,png,gif,jar,war,so,ko,elf,bin,run,service,timer,socket,path,mount,conf
+ExcludeDirectories=node_modules,.git,.svn,__pycache__,overlay2,containers,cache
+# ApprovedHashes and MaliciousHashes accept comma/semicolon-separated MD5 or SHA-256.
+# Only add hashes confirmed by your organization. An absent local record is not proof of safety.
+ApprovedHashes=
+MaliciousHashes=
