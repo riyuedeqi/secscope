@@ -48,6 +48,15 @@ def main():
     assert 'fast-hunt:system|fast-hunt:process|fast-hunt:network|fast-hunt:persistence|fast-hunt:filesystem|fast-hunt:logs)' in profile_module
     assert 'fast-hunt:memory)' not in profile_module
     assert 'daily-hunt:memory' in profile_module
+    assert 'corpus-validation:filesystem)' in profile_module
+    assert 'corpus-validation:system' not in profile_module
+    assert '--corpus-root' in shell and '--corpus-manifest' in shell
+    corpus_branch = shell[shell.index('if [ "$SCAN_PROFILE" = corpus-validation ]; then', shell.index("build_static_candidate_list()")):
+                          shell.index("discover_web_roots", shell.index("build_static_candidate_list()"))]
+    assert "corpus_manifest.py" in shell and "append_runtime_binary_candidates" not in corpus_branch
+    assert "scan_visibility_incomplete" in shell
+    assert "扫描不完整 - PARTIAL/INCONCLUSIVE，不能判定未发现威胁" in shell
+    assert '[ "$classification" != OBSERVE ] || continue' in shell
     assert 'fast-hunt)' in profile_module and 'PROFILE_YARA_ENABLED=false' in profile_module
     assert 'file_inventory.${SCAN_PROFILE}.state' in shell
     assert "CONTEXT_ONLY_NO_PID" in shell and "process_instance_id=" in shell
@@ -58,6 +67,7 @@ def main():
     assert "promote_yara_findings" in yara_module and "yara-findings.tsv" in yara_module and '"yara"' in shell
     assert "helpers/yara_promoter.py" in shell and "YARA-MALICIOUS-HIT:*" in shell
     assert (os.path.isfile(os.path.join(ROOT, "helpers", "yara_promoter.py")))
+    assert (os.path.isfile(os.path.join(ROOT, "helpers", "corpus_manifest.py")))
     assert "load_secscope_modules" in shell and "source \"$module_path\"" in shell
     stable_entity = shell[shell.index("stable_linux_entity()"):
                           shell.index("process_display_for_pid()")]
@@ -68,7 +78,7 @@ def main():
     assert "find \"$root\"" not in shell[shell.index("scan_web_static_structures()"):
                                                 shell.index("correlate_web_attack_chain()")]
     readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
-    assert "# SecScope v1.0 Linux" in readme
+    assert "# SecScope v1.1.0 Linux" in readme
     assert "SECSCOPE_YARA_MODE=auto" in readme and "yara-summary.json" in readme
     assert "v3.9.0" not in readme and "v3.4.5" not in readme
     print("SECURITY_CONTRACTS_OK")

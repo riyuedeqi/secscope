@@ -49,4 +49,11 @@ promote_yara_findings
 [ "${FINDING_EVIDENCE_DOMAINS[0]}" = FILE,INTEGRITY,WEB ]
 grep -q $'^target\trule\t' "$RAW_DIR/yara-findings.tsv"
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["matched"]==2 and d["promoted_findings"]==2' "$RAW_DIR/yara-summary.json"
+
+printf '%s\n' '{"scanner":"classic-yara","target":"fixture","scan_status":"ERROR","error":"fixture error"}' >> "$RAW_DIR/yara-results.jsonl"
+reset_test_findings
+EVENT_SOURCE_YARA=AVAILABLE
+promote_yara_findings
+[ "$YARA_ERROR_COUNT" -gt 0 ]
+[ "$EVENT_SOURCE_YARA" = PARTIAL ]
 printf 'YARA_PROMOTION_OK\n'

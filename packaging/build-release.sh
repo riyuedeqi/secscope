@@ -6,14 +6,15 @@ export COPYFILE_DISABLE=1
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 ROOT=$(cd "$SCRIPT_DIR/.." && pwd -P)
 VERSION=${1:-$(date -u +%Y%m%d)}
-NAME="secscope-v1.0-linux-installer-${VERSION}"
+NAME="secscope-v1.1-linux-installer-${VERSION}"
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/secscope-release.XXXXXX")
 trap 'rm -rf -- "$STAGE"' EXIT
 DEST="$STAGE/$NAME"
 mkdir -p "$DEST" "$ROOT/dist"
 
 tar --no-xattrs --dereference -C "$ROOT" -cf - \
-    --exclude='./dist' --exclude='./prebuilt' --exclude='./archive' --exclude='./work' --exclude='./reports' \
+    --exclude='./dist' --exclude='./prebuilt' --exclude='./runtime' --exclude='./archive' --exclude='./work' --exclude='./reports' \
+    --exclude='./.scan-reports' \
     --exclude='./.git' --exclude='*/__pycache__' --exclude='*.pyc' --exclude='*.o' \
     --exclude='./native/secscope-scanner/scanner' \
     --exclude='./native/secscope-cache/cache-daemon' \

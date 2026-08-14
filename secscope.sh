@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #==============================================================================
-# SecScope 持续安全巡检 v1.0
+# SecScope 持续安全巡检 v1.1
 # 兼容: CentOS 7+ / Ubuntu 18+ / Debian 10+
 # 要求: root 权限执行
 # 用法: bash secscope.sh [--output DIR] [--init-state] [--install]
@@ -18,12 +18,12 @@ export PATH
 #==============================================================================
 # 配置
 #==============================================================================
-readonly SCRIPT_VERSION="1.0-linux"
-readonly DISPLAY_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.1-linux"
+readonly DISPLAY_VERSION="1.1.0"
 readonly SCRIPT_NAME="secscope.sh"
 readonly PRODUCT_NAME="SecScope"
 readonly PRODUCT_TAGLINE="Linux Host Inspection & Threat Hunting"
-readonly RULE_VERSION="2026.08.02.100-rat"
+readonly RULE_VERSION="2026.08.14.110-rat"
 readonly STATE_SCHEMA_VERSION="3"
 readonly FILE_SCAN_CACHE_SCHEMA_VERSION="3"
 readonly NATIVE_HASH_ANALYZER_VERSION="native-hash-files-v2"
@@ -48,6 +48,10 @@ RUN_MODE="${SECSCOPE_MODE:-Hunt}"
 MODE_EXPLICIT=false
 SCAN_PROFILE="${SECSCOPE_PROFILE:-daily-hunt}"
 PROFILE_EXPLICIT=false
+CORPUS_ROOT="${SECSCOPE_CORPUS_ROOT:-}"
+CORPUS_MANIFEST_FILE="${SECSCOPE_CORPUS_MANIFEST:-}"
+CORPUS_VALIDATION_STATUS="NOT_RUN"
+CORPUS_MANIFEST_HELPER="${PROGRAM_DIR}/helpers/corpus_manifest.py"
 NATIVE_SCANNER_MODE="${SECSCOPE_NATIVE_SCANNER:-on}"
 NATIVE_SCANNER_PATH="${SECSCOPE_NATIVE_SCANNER_PATH:-${PROGRAM_DIR}/native/secscope-scanner/scanner}"
 NATIVE_SCANNER_STATUS="NOT_RUN"
@@ -2738,7 +2742,7 @@ print_secscope_logo() {
         printf '%b%s%b\n' "$BOLD$CYAN" '    |   __|   __|     | |   __|     |     |  _  |   __|' "$NC"
         printf '%b%s%b\n' "$BOLD$CYAN" '    |__   |   __|   --| |__   |   --|  |  |   __|   __|' "$NC"
         printf '%b%s%b\n' "$BOLD$CYAN" '    |_____|_____|_____| |_____|_____|_____|__|  |_____|' "$NC"
-        printf '%b%s%b\n' "$DIM" '                                          v1.0.0' "$NC"
+        printf '%b%s%b\n' "$DIM" '                                          v1.1.0' "$NC"
         printf '    PROFILE:%s  YARA:%s  READ-ONLY / OFFLINE\n\n' \
             "$SCAN_PROFILE" "${YARA_MODE:-auto}"
     fi
@@ -4644,6 +4648,42 @@ build_static_candidate_list() {
     STATIC_CANDIDATE_FILE="${RAW_DIR}/static-candidates.txt"
     STATIC_COVERAGE_FILE="${RAW_DIR}/static-coverage.jsonl"
     STATIC_CANDIDATE_STATUS=NOT_RUN
+    if [ "$SCAN_PROFILE" = corpus-validation ]; then
+        local corpus_rc=0
+        python3 "$CORPUS_MANIFEST_HELPER" --manifest "$CORPUS_MANIFEST_FILE" --root "$CORPUS_ROOT" \
+            --output-list "$STATIC_CANDIDATE_FILE" --coverage-jsonl "$STATIC_COVERAGE_FILE" \
+            --summary "$summary" --max-files "$STATIC_MAX_FILES" > "${RAW_DIR}/corpus-manifest-helper.log" 2>&1 || corpus_rc=$?
+        chmod 600 "$STATIC_CANDIDATE_FILE" "$STATIC_COVERAGE_FILE" "$summary" "${RAW_DIR}/corpus-manifest-helper.log" 2>/dev/null || true
+        CORPUS_VALIDATION_STATUS=$(python3 - "$summary" <<'PY' 2>/dev/null || printf INCONCLUSIVE
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8")).get("status", "INCONCLUSIVE"))
+PY
+        )
+        case "$CORPUS_VALIDATION_STATUS:$corpus_rc" in
+            SUCCESS:0)
+                STATIC_CANDIDATE_STATUS=AVAILABLE
+                record_raw_status 'static-candidates.txt' SUCCESS filesystem ''
+                record_raw_status 'static-coverage.jsonl' SUCCESS filesystem ''
+                record_raw_status 'static-discovery-summary.json' SUCCESS filesystem ''
+                ;;
+            INCONCLUSIVE:*)
+                STATIC_CANDIDATE_STATUS=PARTIAL
+                record_raw_status 'static-candidates.txt' PARTIAL filesystem 'corpus_manifest_inconclusive'
+                record_raw_status 'static-coverage.jsonl' PARTIAL filesystem 'corpus_manifest_inconclusive'
+                record_raw_status 'static-discovery-summary.json' PARTIAL filesystem 'corpus_manifest_inconclusive'
+                mark_current_module_partial corpus_manifest_inconclusive
+                ;;
+            *)
+                STATIC_CANDIDATE_STATUS=PARTIAL
+                record_raw_status 'static-candidates.txt' PARTIAL filesystem 'corpus_manifest_partial'
+                record_raw_status 'static-coverage.jsonl' PARTIAL filesystem 'corpus_manifest_partial'
+                record_raw_status 'static-discovery-summary.json' PARTIAL filesystem 'corpus_manifest_partial'
+                mark_current_module_partial corpus_manifest_partial
+                ;;
+        esac
+        record_raw_status 'corpus-manifest-helper.log' "$([ "$corpus_rc" -eq 0 ] && printf SUCCESS || printf PARTIAL)" filesystem "exit=${corpus_rc}"
+        return 0
+    fi
     discover_web_roots
     if [ ! -x "$NATIVE_SCANNER_PATH" ]; then
         : > "$STATIC_CANDIDATE_FILE"; : > "$STATIC_COVERAGE_FILE"
@@ -4679,7 +4719,7 @@ build_static_candidate_list() {
 
 
 run_static_language_adapters() {
-    local out="${RAW_DIR}/static-analysis.jsonl" summary="${RAW_DIR}/static-analysis-summary.json" projection="${RAW_DIR}/static-analysis-projection.tsv" rc=0 native_status=SUCCESS stage_timeout="${STATIC_STAGE_TIMEOUT:-$YARA_TOTAL_TIMEOUT}"
+    local out="${RAW_DIR}/static-analysis.jsonl" summary="${RAW_DIR}/static-analysis-summary.json" projection="${RAW_DIR}/static-analysis-projection.tsv" rc=0 native_status=SUCCESS stage_timeout="${STATIC_STAGE_TIMEOUT:-$YARA_TOTAL_TIMEOUT}" expected_count=0 scanned_count=0
     if [ "$stage_timeout" -le 0 ]; then
         printf '{"detector":"secscope-bounded-static","status":"PARTIAL","timeout":true,"scanned_files":0,"reason":"shared_pipeline_budget_exhausted"}\n' > "$out"
         cp "$out" "$summary"; : > "$projection"
@@ -4699,6 +4739,16 @@ run_static_language_adapters() {
         --max-archive-members 200 --max-archive-bytes 33554432 --max-compression-ratio 50 > "$summary" 2>&1 || rc=$?
     chmod 600 "$out" "$summary" 2>/dev/null || true
     grep -Eq '"status"[[:space:]]*:[[:space:]]*"PARTIAL"' "$summary" && native_status=PARTIAL || true
+    expected_count=$(wc -l < "$STATIC_CANDIDATE_FILE" | tr -d ' ')
+    scanned_count=$(python3 - "$summary" <<'PY' 2>/dev/null || printf 0
+import json, sys
+print(int(json.load(open(sys.argv[1], encoding="utf-8")).get("scanned_files", 0) or 0))
+PY
+    )
+    if [ "${scanned_count:-0}" -ne "${expected_count:-0}" ]; then
+        native_status=PARTIAL
+        mark_current_module_partial "static_analyzer_incomplete_expected_${expected_count}_scanned_${scanned_count}"
+    fi
     if [ "$rc" -eq 0 ] && [ "$native_status" = SUCCESS ]; then
         record_raw_status 'static-analysis.jsonl' SUCCESS filesystem ''
     else
@@ -4710,6 +4760,7 @@ run_static_language_adapters() {
     if [ -r "$projection" ]; then
         while IFS=$'\t' read -r path language classification score sha capabilities edges counter; do
             [ -n "$path" ] || continue
+            [ "$classification" != OBSERVE ] || continue
             record_find "$([ "$classification" = HIGH_RISK_STRUCTURE ] && printf HIGH || printf MEDIUM)" webshell \
                 "${language} 高风险能力结构: $path" \
                 "classification=$classification; score=$score; sha256=$sha; capabilities=$capabilities; causal_edges=$edges" \
@@ -5961,6 +6012,22 @@ run_incremental_file_monitoring() {
     [ "$FILE_SCAN_STATUS" = "SUCCESS" ] && FILE_INVENTORY_READY=true || FILE_INVENTORY_READY=false
 }
 
+initialize_corpus_file_monitoring_artifacts() {
+    FILE_SCAN_MODE="CORPUS_MANIFEST"
+    FILE_SCAN_STATUS="NOT_APPLICABLE"
+    FILE_SCAN_BASELINE=false
+    FILE_SCAN_SCANNED=0; FILE_SCAN_SKIPPED=0; FILE_SCAN_HASH_SUCCESS=0; FILE_SCAN_HASH_REUSED=0; FILE_SCAN_HASH_FAILED=0
+    FILE_SCAN_CHANGES=0; FILE_SCAN_SMALL_PRIORITY=0; FILE_SCAN_ADDED_SMALL=0; FILE_SCAN_SUSPICIOUS=0; FILE_SCAN_OBSERVE=0
+    printf 'action\tpath\told_path\tmd5\tsha256\tsize\tpriority\tpriority_score\tpriority_reasons\n' > "${RAW_DIR}/file-changes.tsv"
+    printf 'priority\tpriority_score\tpriority_reasons\tsize_bytes\taction\tpath\tseverity\tconfidence\tmd5\tsha256\treason\tcontext\n' > "${RAW_DIR}/suspicious-files.tsv"
+    : > "${RAW_DIR}/file-hash-errors.tsv"
+    printf '# corpus-validation uses static-candidates.txt as its authoritative inventory\n' > "${RAW_DIR}/file-inventory-current.tsv"
+    record_raw_status 'file-inventory-current.tsv' NOT_APPLICABLE filesystem 'corpus_manifest_is_authoritative'
+    record_raw_status 'file-changes.tsv' NOT_APPLICABLE filesystem 'cross_round_baseline_disabled_for_corpus'
+    record_raw_status 'file-hash-errors.tsv' NO_RESULTS filesystem ''
+    record_raw_status 'suspicious-files.tsv' NOT_APPLICABLE filesystem 'corpus_manifest_is_authoritative'
+}
+
 check_lightweight_temp_executables() {
     local tmp_exe candidate_path candidate_type candidate_meta candidate_running sev confidence
     tmp_exe=$(collect_temp_code_candidates)
@@ -6072,7 +6139,11 @@ check_filesystem() {
         mark_current_module_partial file_monitoring_resource_budget
         return 0
     fi
-    run_incremental_file_monitoring
+    if [ "$SCAN_PROFILE" = corpus-validation ]; then
+        initialize_corpus_file_monitoring_artifacts
+    else
+        run_incremental_file_monitoring
+    fi
     if [ "$PROFILE_STATIC_ANALYSIS" = true ]; then
         if resource_budget_available static_analysis; then
             benchmark_stage_begin static_analysis_pipeline
@@ -6103,6 +6174,12 @@ check_filesystem() {
     fi
     echo -e "${BOLD}${MAGENTA}  [07/12] 文件系统${NC}"
     echo -e "${BOLD}${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    if [ "$SCAN_PROFILE" = corpus-validation ]; then
+        : > "${RAW_DIR}/tmp_executables.txt"
+        record_raw_status 'tmp_executables.txt' NOT_APPLICABLE filesystem 'isolated_corpus_profile'
+        log_info 'corpus-validation 仅扫描显式清单，不遍历主机默认根、临时目录或运行时映射'
+        return 0
+    fi
     if [ "$PROFILE_DEEP_FILESYSTEM" != true ]; then
         check_lightweight_temp_executables
         log_info "${SCAN_PROFILE} 已完成高价值增量文件扫描；全盘 SUID/无属主/大文件遍历仅由 full 执行"
@@ -7705,7 +7782,7 @@ generate_html_report() {
         echo "</div>"
     }
 
-    # 真实结论判定: 只看威胁类别的 CRITICAL/HIGH
+    # 威胁等级与扫描完整性分别判定；覆盖不足时不得显示普通未发现。
     local v_cls="clean" v_text=""
     if [ "$threat_critical" -gt 0 ]; then
         v_cls="critical"
@@ -7716,6 +7793,9 @@ generate_html_report() {
     elif [ "$threat_medium" -gt 0 ]; then
         v_cls="warn"
         v_text="关注 — ${threat_medium} 个中危威胁项"
+    elif scan_visibility_incomplete; then
+        v_cls="warn"
+        v_text="扫描不完整 — 当前结果为 PARTIAL/INCONCLUSIVE，不能判定未发现威胁"
     else
         v_cls="clean"
         v_text="未发现明显威胁指标"
@@ -7724,6 +7804,9 @@ generate_html_report() {
         elif [ "$base_high" -gt 0 ]; then
             v_text="${v_text}，${base_high} 个高危配置基线建议修复"
         fi
+    fi
+    if [ "$threat_critical" -gt 0 ] || [ "$threat_high" -gt 0 ] || [ "$threat_medium" -gt 0 ]; then
+        scan_visibility_incomplete && v_text="${v_text}；扫描覆盖为 PARTIAL/INCONCLUSIVE"
     fi
 
     cat > "$HTML_FILE" <<'HTM'
@@ -7898,15 +7981,49 @@ generate_report_legacy() {
     chmod 600 "$HTML_FILE" || return 1
     log_info "HTML 报告已保存至: ${HTML_FILE}"
 }
+scan_visibility_incomplete() {
+    local status_file_status
+    case "$STATIC_CANDIDATE_STATUS" in PARTIAL|UNAVAILABLE) return 0 ;; esac
+    for status_file_status in "${MODULE_STATUSES[@]}"; do
+        case "$status_file_status" in PARTIAL|FAILED) return 0 ;; esac
+    done
+    if [ "$PROFILE_YARA_ENABLED" = true ]; then
+        [ "$EVENT_SOURCE_YARA" = AVAILABLE ] || return 0
+        [ "${YARA_RULES_LOADED:-0}" -gt 0 ] || return 0
+        [ "${YARA_ERROR_COUNT:-0}" -eq 0 ] && [ "${YARA_TIMEOUT_COUNT:-0}" -eq 0 ] || return 0
+    fi
+    if [ -r "${RAW_DIR}/static-coverage.jsonl" ] && command -v python3 >/dev/null 2>&1; then
+        python3 - "${RAW_DIR}/static-coverage.jsonl" <<'PY' >/dev/null 2>&1 || return 0
+import json, sys
+rows=[]
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try: rows.append(json.loads(line))
+    except ValueError: pass
+summary=next((x for x in reversed(rows) if x.get("summary")), {})
+expected=int(summary.get("expected_files",0) or 0)
+scanned=int(summary.get("scanned_files",summary.get("selected",0)) or 0)
+skipped=int(summary.get("skipped_files",max(0,expected-scanned)) or 0)
+errors=int(summary.get("error_count",0) or 0)
+status=str(summary.get("status","SUCCESS")).upper()
+raise SystemExit(0 if expected == scanned and skipped == 0 and errors == 0 and status in {"SUCCESS","COMPLETE"} else 1)
+PY
+    fi
+    return 1
+}
+
 verdict_text() {
+    local incomplete_suffix=""
+    scan_visibility_incomplete && incomplete_suffix='；扫描覆盖为 PARTIAL/INCONCLUSIVE'
     if [ "$THREAT_CRITICAL" -gt 0 ]; then
-        printf '疑似入侵 - 发现 %s 个严重威胁指标' "$THREAT_CRITICAL"
+        printf '疑似入侵 - 发现 %s 个严重威胁指标%s' "$THREAT_CRITICAL" "$incomplete_suffix"
     elif [ "$THREAT_HIGH" -gt 2 ]; then
-        printf '高度可疑 - 发现 %s 个高危威胁指标' "$THREAT_HIGH"
+        printf '高度可疑 - 发现 %s 个高危威胁指标%s' "$THREAT_HIGH" "$incomplete_suffix"
     elif [ "$THREAT_HIGH" -gt 0 ]; then
-        printf '存在可疑项 - 发现 %s 个高危威胁指标' "$THREAT_HIGH"
+        printf '存在可疑项 - 发现 %s 个高危威胁指标%s' "$THREAT_HIGH" "$incomplete_suffix"
     elif [ "$THREAT_MEDIUM" -gt 0 ]; then
-        printf '需关注 - 发现 %s 个中等威胁指标' "$THREAT_MEDIUM"
+        printf '需关注 - 发现 %s 个中等威胁指标%s' "$THREAT_MEDIUM" "$incomplete_suffix"
+    elif [ -n "$incomplete_suffix" ]; then
+        printf '扫描不完整 - PARTIAL/INCONCLUSIVE，不能判定未发现威胁'
     else
         printf '未发现明显威胁指标'
     fi
@@ -8242,7 +8359,26 @@ create_share_package() {
 }
 
 write_status_json() {
-    local verdict="$1" idx file_context
+    local verdict="$1" idx file_context static_expected=0 static_scanned=0 static_skipped=0 static_errors=0 static_skip_reasons_json="[]" scan_completion_status=COMPLETE
+    if [ -r "${RAW_DIR}/static-coverage.jsonl" ] && command -v python3 >/dev/null 2>&1; then
+        IFS=$'\t' read -r static_expected static_scanned static_skipped static_errors static_skip_reasons_json < <(python3 - "${RAW_DIR}/static-coverage.jsonl" <<'PY'
+import json, sys
+rows=[]
+for line in open(sys.argv[1], encoding='utf-8', errors='replace'):
+    try: rows.append(json.loads(line))
+    except ValueError: pass
+summary=next((x for x in reversed(rows) if x.get('summary')), {})
+expected=int(summary.get('expected_files', sum(int(x.get('expected_files',0) or 0) for x in rows if not x.get('summary'))) or 0)
+scanned=int(summary.get('scanned_files', summary.get('selected',0)) or 0)
+skipped=int(summary.get('skipped_files', max(0,expected-scanned)) or 0)
+errors=int(summary.get('error_count', sum(int(x.get('error_count',x.get('errors',0)) or 0) for x in rows if not x.get('summary'))) or 0)
+reasons=sorted(set(str(r) for x in rows for r in x.get('skip_reasons',[]) if r))
+print('\t'.join((str(expected),str(scanned),str(skipped),str(errors),json.dumps(reasons,separators=(',',':')))))
+PY
+        )
+    fi
+    if [ "$static_errors" -gt 0 ] || [ "$static_skipped" -gt 0 ] || [ "$YARA_ERROR_COUNT" -gt 0 ] || [ "$YARA_TIMEOUT_COUNT" -gt 0 ]; then scan_completion_status=PARTIAL; fi
+    if [ "$STATIC_CANDIDATE_STATUS" = PARTIAL ] && [ "$static_expected" -eq 0 ]; then scan_completion_status=INCONCLUSIVE; fi
     STATUS_FILE="${OUTPUT_DIR}/status.json"
     {
         echo '{'
@@ -8255,6 +8391,11 @@ write_status_json() {
             "$(json_quote "${REPORT_ROOT}/index.html")"
         printf '  "native_scanner":{"mode":%s,"status":%s,"path":%s},\n' \
             "$(json_quote "$NATIVE_SCANNER_MODE")" "$(json_quote "$NATIVE_SCANNER_STATUS")" "$(json_quote "$NATIVE_SCANNER_PATH")"
+        printf '  "scan_coverage":{"status":%s,"expected_files":%s,"scanned_files":%s,"skipped_files":%s,"error_count":%s,"skip_reasons":%s},\n' \
+            "$(json_quote "$scan_completion_status")" "$static_expected" "$static_scanned" "$static_skipped" "$static_errors" "$static_skip_reasons_json"
+        printf '  "corpus_validation":{"status":%s,"root":%s,"manifest":%s,"isolated":%s},\n' \
+            "$(json_quote "$CORPUS_VALIDATION_STATUS")" "$(json_quote "$CORPUS_ROOT")" "$(json_quote "$CORPUS_MANIFEST_FILE")" \
+            "$([ "$SCAN_PROFILE" = corpus-validation ] && printf true || printf false)"
         printf '  "native_runtime":{"ready":%s,"initial":%s,"periodic":%s,"final":%s,"raw":["raw/runtime-snapshot-initial.jsonl","raw/runtime-snapshot-periodic.jsonl","raw/runtime-snapshot-final.jsonl"]},\n' \
             "$NATIVE_RUNTIME_READY" "$(json_quote "$NATIVE_RUNTIME_INITIAL_STATUS")" "$(json_quote "$NATIVE_RUNTIME_PERIODIC_STATUS")" "$(json_quote "$NATIVE_RUNTIME_FINAL_STATUS")"
         printf '  "portable_paths":{"output":".","report_html":%s,"findings":"findings.json","raw":"raw/","raw_manifest":"raw-manifest.json","report_manifest":"report-manifest.json","archive_index":"../index.html"},\n' "$(json_quote "$(basename "$HTML_FILE")")"
@@ -8645,7 +8786,7 @@ install_secscope() {
     } > "${target}.sha256"
     chmod 0400 "${target}.sha256"
     local helper
-    for helper in yara_normalizer.py yara_promoter.py rat_engine.py threat_intel.py; do
+    for helper in yara_normalizer.py yara_promoter.py rat_engine.py threat_intel.py corpus_manifest.py; do
         if [ -f "${PROGRAM_DIR}/helpers/${helper}" ] && [ ! -L "${PROGRAM_DIR}/helpers/${helper}" ]; then
             install -m 0500 "${PROGRAM_DIR}/helpers/${helper}" "/opt/secscope/helpers/${helper}" || {
                 log_error "无法安装只读解析 helper: ${helper}"; return 1;
@@ -8886,7 +9027,7 @@ uninstall_secscope() {
     rm -f /etc/systemd/system/secscope.timer /etc/systemd/system/secscope-fast.timer /etc/systemd/system/secscope-daily.timer /etc/systemd/system/secscope-full.timer /etc/systemd/system/secscope.service /etc/systemd/system/secscope@.service /etc/systemd/system/secscope-cache.service /etc/cron.d/secscope
     systemctl daemon-reload 2>/dev/null || true
     # 报告默认保存在程序目录，卸载时仅删除程序文件，保留 HTML 报告。
-    rm -f /opt/secscope/secscope.sh /opt/secscope/secscope.sh.sha256 /opt/secscope/scanner /opt/secscope/cache-daemon /opt/secscope/cache-client /opt/secscope/native/secscope-scanner/scanner /opt/secscope/native/secscope-cache/cache-daemon /opt/secscope/native/secscope-cache/cache-client /opt/secscope/modules/profile.sh /opt/secscope/modules/yara.sh /opt/secscope/helpers/yara_normalizer.py /opt/secscope/helpers/yara_promoter.py /opt/secscope/helpers/rat_engine.py /opt/secscope/helpers/threat_intel.py /opt/secscope/helpers/java/SecScopeRuntimeInspector.java /opt/secscope/helpers/java/README.md /opt/secscope/rules/ioc-local.txt /opt/secscope/rules/ioc-allow.txt /opt/secscope/rules/yara-forge-core-20260809/yara-rules-core.yar /opt/secscope/runtime/linux-amd64/bin/yr /opt/secscope/runtime/linux-arm64/bin/yr
+    rm -f /opt/secscope/secscope.sh /opt/secscope/secscope.sh.sha256 /opt/secscope/scanner /opt/secscope/cache-daemon /opt/secscope/cache-client /opt/secscope/native/secscope-scanner/scanner /opt/secscope/native/secscope-cache/cache-daemon /opt/secscope/native/secscope-cache/cache-client /opt/secscope/modules/profile.sh /opt/secscope/modules/yara.sh /opt/secscope/helpers/yara_normalizer.py /opt/secscope/helpers/yara_promoter.py /opt/secscope/helpers/rat_engine.py /opt/secscope/helpers/threat_intel.py /opt/secscope/helpers/corpus_manifest.py /opt/secscope/helpers/java/SecScopeRuntimeInspector.java /opt/secscope/helpers/java/README.md /opt/secscope/rules/ioc-local.txt /opt/secscope/rules/ioc-allow.txt /opt/secscope/rules/yara-forge-core-20260809/yara-rules-core.yar /opt/secscope/runtime/linux-amd64/bin/yr /opt/secscope/runtime/linux-arm64/bin/yr
     rmdir /opt/secscope/native/secscope-scanner /opt/secscope/native/secscope-cache /opt/secscope/native /opt/secscope/modules /opt/secscope/helpers/java /opt/secscope/helpers /opt/secscope/rules/yara-forge-core-20260809 /opt/secscope/rules /opt/secscope/runtime/linux-amd64/bin /opt/secscope/runtime/linux-amd64 /opt/secscope/runtime/linux-arm64/bin /opt/secscope/runtime/linux-arm64 /opt/secscope/runtime 2>/dev/null || true
     rmdir /opt/secscope 2>/dev/null || true
     log_info "SecScope 程序已卸载；HTML 报告、状态和配置已保留"
@@ -8949,7 +9090,7 @@ INDEX
 
 enforce_offline_network_policy() {
     # 保留旧配置键的解析兼容性，但任何值都不会触发出站请求。
-    [ -z "$WEBHOOK_URL" ] || log_warn 'SECSCOPE_WEBHOOK_URL 已被忽略：v1.0 为永久离线模式（OUTBOUND_DISABLED_BY_DESIGN）'
+    [ -z "$WEBHOOK_URL" ] || log_warn 'SECSCOPE_WEBHOOK_URL 已被忽略：SecScope 为永久离线模式（OUTBOUND_DISABLED_BY_DESIGN）'
     return 0
 }
 
@@ -9203,7 +9344,9 @@ print_usage() {
 
 巡检与状态:
   --mode hunt|full         默认 Hunt；Hunt 突出威胁/异常/IOC/攻击链，Full 同时呈现基线与运行观察
-  --profile fast-hunt|daily-hunt|full  扫描档位；默认 daily-hunt，--mode full 兼容映射为 full
+  --profile fast-hunt|daily-hunt|full|corpus-validation  扫描档位；默认 daily-hunt
+  --corpus-root DIR        corpus-validation 的隔离样本根目录
+  --corpus-manifest FILE   JSONL 清单；每行含 path，可选 sha256、sample_id、lane
   --host-role ROLE         公共角色：workstation/member-server/domain-controller/web-server/database-server/file-server/rdp-server/kubernetes/bastion/dev/generic
   --output DIR             指定本轮报告目录
   --report-root DIR        指定默认报告根目录
@@ -9338,7 +9481,7 @@ run_self_test() {
     write_cron_file "$test_root/secscope.cron" '0 */1 * * *' || failures=$((failures + 1))
     grep -q '^0 \*/1 \* \* \* root .*systemctl start --no-block secscope.service' "$test_root/secscope.cron" 2>/dev/null || failures=$((failures + 1))
 
-    # v1.0 报告、证据域门禁、RAT 证据图、排序、筛选与完整性自检。
+    # 报告、证据域门禁、RAT 证据图、排序、筛选与完整性自检。
     reset_test_findings
     CURRENT_MODULE=process
     record_find LOW process 'low finding' 'low evidence' 'observe' '' 'TEST-LOW' 'low'
@@ -9388,7 +9531,7 @@ run_self_test() {
     bash "$OUTPUT_DIR/verify-report.sh" >/dev/null 2>&1 && failures=$((failures + 1))
     printf 'self-test raw evidence\n' > "$RAW_DIR/sample.txt"
     if command -v python3 >/dev/null 2>&1; then
-        python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["schema_version"] == 3 and d["platform"] == "linux" and d["profile"] in ("fast-hunt","daily-hunt","full") and d["local_addresses"] and d["portable_paths"]["findings"] == "findings.json"; assert "telemetry_health" in d and "process_behavior_baseline" in d and "beacon_detection" in d and "connection_baseline" in d; assert d["web_access_log"]["WEB_ACCESS_LOG_STATUS"] in ("MISSING","AVAILABLE","PARTIAL"); assert "priority_model" in d["file_monitoring"] and "priority_model" in d["file_scan"]; assert "container_context" in d and "kubernetes_context" in d; assert d["yara"]["mode"] in ("disabled","lite","standard","full","forensic") and "promoted_findings" in d["yara"]' "$STATUS_FILE" || failures=$((failures + 1))
+        python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["schema_version"] == 3 and d["platform"] == "linux" and d["profile"] in ("fast-hunt","daily-hunt","full","corpus-validation") and d["local_addresses"] and d["portable_paths"]["findings"] == "findings.json"; assert "telemetry_health" in d and "process_behavior_baseline" in d and "beacon_detection" in d and "connection_baseline" in d; assert d["web_access_log"]["WEB_ACCESS_LOG_STATUS"] in ("MISSING","AVAILABLE","PARTIAL"); assert "priority_model" in d["file_monitoring"] and "priority_model" in d["file_scan"]; assert "container_context" in d and "kubernetes_context" in d; assert d["yara"]["mode"] in ("disabled","lite","standard","full","forensic") and "promoted_findings" in d["yara"]' "$STATUS_FILE" || failures=$((failures + 1))
         python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); types={x["finding_type"] for x in d["findings"]}; assert "SECURITY_THREAT" in types and "SECURITY_ANOMALY" in types and "file_changes" in d and "abnormal_connections" in d; assert all(isinstance(x["evidence_domains"],list) and isinstance(x["attack_timeline"],list) and x["evidence_domain_count"]==len(set(x["evidence_domains"])) for x in d["findings"])' "$OUTPUT_DIR/findings.json" || failures=$((failures + 1))
         python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert "files" in d' "$OUTPUT_DIR/raw-manifest.json" || failures=$((failures + 1))
         python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert "files" in d' "$OUTPUT_DIR/report-manifest.json" || failures=$((failures + 1))
@@ -9413,7 +9556,7 @@ main() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --json) shift ;;
-            --output|--state-dir|--report-root|--file-scan-config|--mode|--profile|--host-role)
+            --output|--state-dir|--report-root|--file-scan-config|--mode|--profile|--host-role|--corpus-root|--corpus-manifest)
                 if [ $# -lt 2 ] || [ -z "$2" ]; then log_error "$1 需要一个目录参数"; return 2; fi
                 case "$1" in
                     --output) OUTPUT_DIR="$2"; OUTPUT_DIR_EXPLICIT=true ;;
@@ -9421,8 +9564,10 @@ main() {
                     --report-root) REPORT_ROOT="$2" ;;
                     --file-scan-config) FILE_SCAN_CONFIG_FILE="$2" ;;
                     --mode) case "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" in hunt) RUN_MODE=Hunt; MODE_EXPLICIT=true ;; full) RUN_MODE=Full; MODE_EXPLICIT=true ;; *) log_error '--mode 仅支持 hunt 或 full'; return 2 ;; esac ;;
-                    --profile) profile_arg=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]'); case "$profile_arg" in fast-hunt|daily-hunt|full) SCAN_PROFILE="$profile_arg"; PROFILE_EXPLICIT=true ;; *) log_error '--profile 仅支持 fast-hunt、daily-hunt 或 full'; return 2 ;; esac ;;
+                    --profile) profile_arg=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]'); case "$profile_arg" in fast-hunt|daily-hunt|full|corpus-validation) SCAN_PROFILE="$profile_arg"; PROFILE_EXPLICIT=true ;; *) log_error '--profile 仅支持 fast-hunt、daily-hunt、full 或 corpus-validation'; return 2 ;; esac ;;
                     --host-role) HOST_ROLE=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]') ;;
+                    --corpus-root) CORPUS_ROOT="$2" ;;
+                    --corpus-manifest) CORPUS_MANIFEST_FILE="$2" ;;
                 esac
                 shift 2
                 ;;
@@ -9469,6 +9614,16 @@ main() {
     if [ "$PROFILE_EXPLICIT" = false ] && [ "$RUN_MODE" = Full ]; then SCAN_PROFILE=full; fi
     apply_scan_profile || { log_error "无效扫描 Profile: $SCAN_PROFILE"; return 2; }
     [ "$MODE_EXPLICIT" = false ] || RUN_MODE="$requested_mode"
+    if [ "$SCAN_PROFILE" = corpus-validation ]; then
+        [ -n "$CORPUS_ROOT" ] && [ -n "$CORPUS_MANIFEST_FILE" ] || { log_error 'corpus-validation 必须同时指定 --corpus-root 和 --corpus-manifest'; return 2; }
+        [ -d "$CORPUS_ROOT" ] && [ ! -L "$CORPUS_ROOT" ] || { log_error "corpus 根目录无效或为符号链接: $CORPUS_ROOT"; return 2; }
+        [ -f "$CORPUS_MANIFEST_FILE" ] && [ ! -L "$CORPUS_MANIFEST_FILE" ] && [ -r "$CORPUS_MANIFEST_FILE" ] || { log_error "corpus 清单不可读或为符号链接: $CORPUS_MANIFEST_FILE"; return 2; }
+        [ -r "$CORPUS_MANIFEST_HELPER" ] || { log_error "corpus 清单 helper 不可用: $CORPUS_MANIFEST_HELPER"; return 2; }
+        STATE_ENABLED=false
+    elif [ -n "$CORPUS_ROOT$CORPUS_MANIFEST_FILE" ]; then
+        log_error '--corpus-root/--corpus-manifest 仅允许与 --profile corpus-validation 一起使用'
+        return 2
+    fi
     for enabled in "$FAST_ENABLED" "$DAILY_ENABLED" "$FULL_ENABLED"; do case "$enabled" in true|false) ;; *) log_error 'SECSCOPE_*_ENABLED 必须为 true 或 false'; return 2 ;; esac; done
     valid_schedule_interval "$FAST_INTERVAL" && valid_schedule_interval "$DAILY_INTERVAL" && valid_schedule_interval "$FULL_INTERVAL" || { log_error 'SECSCOPE_*_INTERVAL 必须使用 10min、30min、1h、2h、6h、12h、1d 或 7d 形式'; return 2; }
 
@@ -9526,7 +9681,7 @@ main() {
         return 3
     fi
 
-    case "$SCAN_PROFILE" in fast-hunt) report_profile_dir=fast ;; daily-hunt) report_profile_dir=daily ;; full) report_profile_dir=full ;; esac
+    case "$SCAN_PROFILE" in fast-hunt) report_profile_dir=fast ;; daily-hunt) report_profile_dir=daily ;; full) report_profile_dir=full ;; corpus-validation) report_profile_dir=corpus-validation ;; esac
     if [ "$OUTPUT_DIR_EXPLICIT" = false ]; then REPORT_ROOT="${REPORT_ROOT%/}/${report_profile_dir}"; fi
     [ -L "$REPORT_ROOT" ] && { log_error "拒绝使用符号链接报告根目录: $REPORT_ROOT"; return 1; }
     if ! mkdir -p "$REPORT_ROOT" || ! chmod 700 "$REPORT_ROOT"; then

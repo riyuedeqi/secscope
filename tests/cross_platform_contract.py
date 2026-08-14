@@ -27,7 +27,7 @@ def check_sources(root: Path) -> None:
         assert marker in source, f"Linux contract marker missing: {marker}"
     assert re.findall(r"run_module\s+(\w+)\s+", shell)[-12:] == LINUX_MODULES
     assert 'STATE_SCHEMA_VERSION="3"' in source
-    assert 'readonly SCRIPT_VERSION="1.0-linux"' in source
+    assert 'readonly SCRIPT_VERSION="1.1-linux"' in source
     assert "initialize_yara_capability" in source and "scan_yara_candidates" in source
     assert "load_secscope_modules" in shell and "source \"$module_path\"" in shell
     assert 'csv_json_array "${FINDING_EVIDENCE_DOMAINS[$idx]}"' in shell

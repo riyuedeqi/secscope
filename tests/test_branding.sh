@@ -12,8 +12,8 @@ printf '%s\n' "$wide" | grep -Fqx '     _____ _____ _____   _____ _____ _____ __
 printf '%s\n' "$wide" | grep -Fqx '    |   __|   __|     | |   __|     |     |  _  |   __|' || exit 1
 printf '%s\n' "$wide" | grep -Fqx '    |__   |   __|   --| |__   |   --|  |  |   __|   __|' || exit 1
 printf '%s\n' "$wide" | grep -Fqx '    |_____|_____|_____| |_____|_____|_____|__|  |_____|' || exit 1
-printf '%s\n' "$wide" | grep -Fqx '                                          v1.0.0' || exit 1
-printf '%s\n' "$compact" | grep -Fqx 'SECSCOPE v1.0.0' || exit 1
+printf '%s\n' "$wide" | grep -Fqx '                                          v1.1.0' || exit 1
+printf '%s\n' "$compact" | grep -Fqx 'SECSCOPE v1.1.0' || exit 1
 [ "$(printf '%s\n' "$compact" | awk '{if(length>max)max=length} END{print max+0}')" -le 40 ] || exit 1
 
 printf 'BRANDING_OK\n'

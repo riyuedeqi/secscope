@@ -53,7 +53,19 @@ std::string classify(const std::string& path) {
     if (BINARY.count(extension)) return "binary";
     if (ARCHIVE.count(extension) || (value.size() >= 7 && value.substr(value.size() - 7) == ".tar.gz")) return "archive";
     if (DISGUISE.count(extension)) return "disguise";
+    const std::string base = std::filesystem::path(value).filename().string();
+    if (extension.empty() || (!base.empty() && base.front() == '.')) return "code";
     return "other";
+}
+
+int root_priority(const std::string& path) {
+    const std::string value = lower(absolute_lexical_path(path));
+    for (const char* root : {"/tmp", "/var/tmp", "/dev/shm", "/var/www", "/srv/www", "/home"}) {
+        const std::string prefix(root);
+        if (value == prefix || (value.size() > prefix.size() && value.compare(0, prefix.size(), prefix) == 0 && value[prefix.size()] == '/')) return 3;
+    }
+    if (value.rfind("/etc", 0) == 0 || value.rfind("/usr/local", 0) == 0) return 2;
+    return 1;
 }
 
 bool excluded_path(const std::string& path, const std::vector<std::string>& prefixes) {
@@ -71,6 +83,7 @@ struct WalkReport {
     std::uint64_t skipped_symlink = 0;
     std::uint64_t skipped_depth = 0;
     std::uint64_t errors = 0;
+    std::uint64_t skipped_budget = 0;
     bool timed_out = false;
 };
 
@@ -109,6 +122,7 @@ WalkReport walk_root(const std::string& root, unsigned max_depth,
             if (group != "other" || entry->d_name[0] == '.') {
                 auto& queue = report.queues[group];
                 if (queue.size() < per_class_limit) queue.push_back(absolute_lexical_path(path));
+                else ++report.skipped_budget;
             }
         }
         if (errno != 0) ++report.errors;
@@ -150,18 +164,27 @@ int run_candidate_discovery(const Arguments& args) {
         if (::lstat(root.c_str(), &status) != 0 || !S_ISDIR(status.st_mode) || S_ISLNK(status.st_mode)) continue;
         if (seen_roots.insert(root).second) roots.push_back(root);
     }
+    std::sort(roots.begin(), roots.end(), [](const std::string& left, const std::string& right) {
+        const int left_priority = root_priority(left), right_priority = root_priority(right);
+        return left_priority != right_priority ? left_priority > right_priority : left < right;
+    });
 
     AtomicOutput candidates(argument(args, "--output-list"));
     AtomicOutput coverage(argument(args, "--coverage-jsonl"));
     if (!candidates.good() || !coverage.good()) { std::cerr << "cannot create discovery output\n"; return 2; }
     const std::size_t fair_quota = std::min(root_quota, std::max<std::size_t>(1, max_files / std::max<std::size_t>(1, roots.size())));
     std::size_t selected = 0;
+    std::uint64_t expected = 0;
+    std::uint64_t errors = 0;
+    std::set<std::string> selected_paths;
     for (const auto& root : roots) {
         if (Clock::now() >= deadline || selected >= max_files) {
             coverage.stream() << Json{{"root", root}, {"selected", 0}, {"status", "NOT_STARTED_TOTAL_LIMIT"}}.dump() << '\n';
             continue;
         }
         WalkReport report = walk_root(root, max_depth, deadline, fair_quota, excluded_prefixes);
+        expected += report.discovered;
+        errors += report.errors;
         std::size_t picked = 0;
         const std::vector<std::string> order{"code", "binary", "archive", "disguise", "other"};
         bool available = true;
@@ -171,21 +194,33 @@ int run_candidate_discovery(const Arguments& args) {
                 auto& queue = report.queues[group];
                 if (queue.empty()) continue;
                 available = true;
-                candidates.stream() << queue.front() << '\n';
-                queue.pop_front(); ++picked; ++selected;
+                const std::string candidate = queue.front();
+                queue.pop_front();
+                if (!selected_paths.insert(candidate).second) continue;
+                candidates.stream() << candidate << '\n';
+                ++picked; ++selected;
                 if (picked >= fair_quota || selected >= max_files) break;
             }
         }
-        const bool partial = report.timed_out || report.skipped_depth > 0 || report.discovered > picked;
+        const bool partial = report.timed_out || report.skipped_depth > 0 || report.errors > 0 || report.skipped_budget > 0 || report.discovered > picked;
+        Json skip_reasons = Json::array();
+        if (report.skipped_budget > 0) skip_reasons.push_back("budget");
+        if (report.skipped_depth > 0) skip_reasons.push_back("depth");
+        if (report.timed_out) skip_reasons.push_back("timeout");
+        if (report.errors > 0) skip_reasons.push_back("errors");
         coverage.stream() << Json{{"discovered", report.discovered}, {"errors", report.errors},
+            {"error_count", report.errors}, {"expected_files", report.discovered}, {"scanned_files", picked},
             {"reason", partial ? "time/depth/quota bound" : ""}, {"root", root},
-            {"selected", picked}, {"skipped_depth", report.skipped_depth},
+            {"selected", picked}, {"skipped_files", report.discovered > picked ? report.discovered - picked : 0},
+            {"skip_reasons", skip_reasons}, {"skipped_budget", report.skipped_budget}, {"skipped_depth", report.skipped_depth},
             {"skipped_symlink", report.skipped_symlink}, {"status", partial ? "PARTIAL" : "COMPLETE"},
             {"timed_out", report.timed_out}}.dump() << '\n';
     }
     const bool timed_out = Clock::now() >= deadline;
     coverage.stream() << Json{{"fair_root_quota", fair_quota}, {"max_files", max_files},
-        {"roots", roots.size()}, {"selected", selected}, {"summary", true}, {"timeout", timed_out}}.dump() << '\n';
+        {"roots", roots.size()}, {"selected", selected}, {"expected_files", expected}, {"scanned_files", selected},
+        {"skipped_files", expected > selected ? expected - selected : 0}, {"error_count", errors},
+        {"summary", true}, {"timeout", timed_out}}.dump() << '\n';
     if (!candidates.commit() || !coverage.commit()) { std::cerr << "cannot commit discovery output\n"; return 2; }
     std::cout << Json{{"roots", roots.size()}, {"selected", selected},
         {"status", timed_out || selected >= max_files ? "PARTIAL" : "SUCCESS"}}.dump() << '\n';

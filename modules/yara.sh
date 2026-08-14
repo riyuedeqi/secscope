@@ -171,6 +171,20 @@ promote_yara_findings() {
     local out="${RAW_DIR}/yara-findings.tsv" summary="${RAW_DIR}/yara-summary.json" rc=0
     local target rule namespace severity confidence category family mitre description tags metadata_json sha md5 package action priority_score priority_reasons web_root web_access process_context network_context persistence_context container_context kubernetes_context domains requested_type promotion_reason
     YARA_SCANNED=0; YARA_MATCHED=0; YARA_TIMEOUT_COUNT=0; YARA_ERROR_COUNT=0; YARA_PROMOTED_FINDINGS=0
+    local expected_files=0
+    [ -r "${RAW_DIR}/static-coverage.jsonl" ] && expected_files=$(python3 - "${RAW_DIR}/static-coverage.jsonl" <<'PY'
+import json, sys
+total = 0
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try:
+        item = json.loads(line)
+    except ValueError:
+        continue
+    if not item.get("summary"):
+        total += int(item.get("expected_files", item.get("selected", 0)) or 0)
+print(total)
+PY
+    )
     YARA_RULES_LOADED=${#YARA_RULE_SOURCES[@]}
     if [ "$PROFILE_YARA_ENABLED" != true ] || [ "$EVENT_SOURCE_YARA" = DISABLED ]; then
         printf '%s\n' $'target\trule\tnamespace\tseverity\tconfidence\tcategory\tfamily\tmitre\tdescription\ttags\tmetadata_json\tsha256\tmd5\tpackage_owner\tfile_action\tpriority_score\tpriority_reasons\tweb_root\tweb_access\tprocess_context\tnetwork_context\tpersistence_context\tcontainer_context\tkubernetes_context\tevidence_domains\trequested_finding_type\tpromotion_reason' > "$out"
@@ -206,6 +220,25 @@ d=json.load(open(sys.argv[1],encoding='utf-8'))
 print('\t'.join(str(d.get(k,0)) for k in ('scanned','matched','timeout','error','promoted_findings','rules_loaded')))
 PY
     )
+    local yara_tsv_errors=0 yara_tsv_timeouts=0
+    if [ -r "${RAW_DIR}/yara-errors.tsv" ]; then
+        yara_tsv_errors=$(awk -F '\t' 'NR>1 && $3!="TIMEOUT" {n++} END {print n+0}' "${RAW_DIR}/yara-errors.tsv")
+        yara_tsv_timeouts=$(awk -F '\t' 'NR>1 && $3=="TIMEOUT" {n++} END {print n+0}' "${RAW_DIR}/yara-errors.tsv")
+        [ "$YARA_ERROR_COUNT" -ge "$yara_tsv_errors" ] || YARA_ERROR_COUNT="$yara_tsv_errors"
+        [ "$YARA_TIMEOUT_COUNT" -ge "$yara_tsv_timeouts" ] || YARA_TIMEOUT_COUNT="$yara_tsv_timeouts"
+    fi
+    if [ "${expected_files:-0}" -gt 0 ] && [ "$YARA_SCANNED" -lt "$expected_files" ]; then
+        YARA_ERROR_COUNT=$((YARA_ERROR_COUNT + expected_files - YARA_SCANNED))
+        mark_current_module_partial "yara_incomplete_expected_${expected_files}_scanned_${YARA_SCANNED}"
+        python3 - "$summary" "$expected_files" "$YARA_SCANNED" <<'PY'
+import json, sys
+path, expected, scanned = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+data = json.load(open(path, encoding="utf-8"))
+data.update({"expected_files": expected, "scanned_files": scanned, "status": "PARTIAL",
+             "skip_reasons": sorted(set(data.get("skip_reasons", []) + ["candidate_budget_or_error"]))})
+open(path, "w", encoding="utf-8").write(json.dumps(data, sort_keys=True) + "\n")
+PY
+    fi
     while IFS=$'\037' read -r target rule namespace severity confidence category family mitre description tags metadata_json sha md5 package action priority_score priority_reasons web_root web_access process_context network_context persistence_context container_context kubernetes_context domains requested_type promotion_reason; do
         [ "$target" = target ] && continue
         [ -n "$target$rule" ] || continue
@@ -228,7 +261,16 @@ PY
     done < <(tr '\t' '\037' < "$out")
     [ "$YARA_MATCHED" -gt 0 ] && record_raw_status 'yara-findings.tsv' SUCCESS yara '' || record_raw_status 'yara-findings.tsv' NO_RESULTS yara ''
     if [ "$YARA_ERROR_COUNT" -gt 0 ] || [ "$YARA_TIMEOUT_COUNT" -gt 0 ]; then
+        EVENT_SOURCE_YARA=PARTIAL
+        python3 - "$summary" "$YARA_ERROR_COUNT" "$YARA_TIMEOUT_COUNT" <<'PY'
+import json, sys
+path, errors, timeouts = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+data = json.load(open(path, encoding="utf-8"))
+data.update({"status": "PARTIAL", "error": errors, "timeout": timeouts})
+open(path, "w", encoding="utf-8").write(json.dumps(data, sort_keys=True) + "\n")
+PY
         record_raw_status 'yara-summary.json' PARTIAL yara 'scan timeout/error present'
+        mark_current_module_partial "yara_scan_incomplete_errors_${YARA_ERROR_COUNT}_timeouts_${YARA_TIMEOUT_COUNT}"
     else
         record_raw_status 'yara-summary.json' SUCCESS yara ''
     fi

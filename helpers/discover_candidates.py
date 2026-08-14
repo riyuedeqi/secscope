@@ -38,7 +38,20 @@ def classify(path):
         return "archive"
     if ext in DISGUISE:
         return "disguise"
+    # Extensionless and hidden files are frequent WebShell locations.
+    if not ext or os.path.basename(path).startswith("."):
+        return "code"
     return "other"
+
+
+def root_priority(path):
+    value = os.path.abspath(path).lower()
+    if any(value == root or value.startswith(root + os.sep)
+           for root in ("/tmp", "/var/tmp", "/dev/shm", "/var/www", "/srv/www", "/home")):
+        return 3
+    if value.startswith("/etc") or value.startswith("/usr/local"):
+        return 2
+    return 1
 
 
 def is_excluded(path, excluded_prefixes):
@@ -56,6 +69,7 @@ def walk_root(root, max_depth, deadline, per_class_limit, excluded_prefixes):
     skipped_symlink = 0
     skipped_depth = 0
     errors = 0
+    skipped_budget = 0
     stack = [(root, 0)]
     while stack and time.monotonic() < deadline:
         current, depth = stack.pop()
@@ -87,12 +101,15 @@ def walk_root(root, max_depth, deadline, per_class_limit, excluded_prefixes):
                         if group != "other" or entry.name.startswith("."):
                             if len(queues[group]) < per_class_limit:
                                 queues[group].append(os.path.abspath(entry.path))
+                            else:
+                                skipped_budget += 1
                     except (OSError, ValueError):
                         errors += 1
         except (OSError, ValueError):
             errors += 1
     return queues, {"discovered": discovered, "skipped_symlink": skipped_symlink,
-                    "skipped_depth": skipped_depth, "errors": errors,
+                    "skipped_depth": skipped_depth, "skipped_budget": skipped_budget,
+                    "errors": errors,
                     "timed_out": time.monotonic() >= deadline}
 
 
@@ -121,10 +138,12 @@ def main():
                 continue
             roots.append(os.path.abspath(path))
     selected = []
+    selected_set = set()
     reports = []
     # Reserve a fair share for every discovered root before any early root can
     # consume the global budget.  Explicit root_quota remains an upper bound.
     fair_root_quota = min(args.root_quota, max(1, args.max_files // max(1, len(roots))))
+    roots = sorted(roots, key=lambda item: (-root_priority(item), item))
     # Reserve enough per-class headroom, then interleave in priority order.
     for root in roots:
         if time.monotonic() >= deadline or len(selected) >= args.max_files:
@@ -138,12 +157,29 @@ def main():
                 if queues[name] and len(picked) < fair_root_quota:
                     picked.append(queues[name].popleft())
         room = args.max_files - len(selected)
-        selected.extend(picked[:room])
-        report.update({"root": root, "selected": min(len(picked), room),
+        unique_picked = []
+        for path in picked:
+            if path not in selected_set:
+                selected_set.add(path)
+                unique_picked.append(path)
+        selected.extend(unique_picked[:room])
+        selected_count = min(len(unique_picked), room)
+        skip_reasons = []
+        if report.get("skipped_budget"): skip_reasons.append("budget")
+        if report["skipped_depth"]: skip_reasons.append("depth")
+        if report["timed_out"]: skip_reasons.append("timeout")
+        if report["errors"]: skip_reasons.append("errors")
+        report.update({"root": root, "selected": selected_count,
+                       "expected_files": report["discovered"],
+                       "scanned_files": selected_count,
+                       "skipped_files": max(0, report["discovered"] - selected_count),
+                       "skip_reasons": skip_reasons,
                        "status": "PARTIAL" if report["timed_out"] or report["skipped_depth"] or
+                       report["errors"] or report.get("skipped_budget") or
                        report["discovered"] > len(picked) else "COMPLETE",
                        "reason": "time/depth/quota bound" if report["timed_out"] or
-                       report["skipped_depth"] or report["discovered"] > len(picked) else ""})
+                       report["skipped_depth"] or report["errors"] or report.get("skipped_budget") or
+                       report["discovered"] > len(picked) else ""})
         reports.append(report)
     with open(args.output_list, "w") as output:
         for path in selected:
@@ -151,7 +187,12 @@ def main():
     with open(args.coverage_jsonl, "w") as output:
         for report in reports:
             output.write(json.dumps(report, sort_keys=True) + "\n")
+        expected = sum(item.get("expected_files", 0) for item in reports)
         output.write(json.dumps({"summary": True, "roots": len(roots), "selected": len(selected),
+                                 "expected_files": expected, "scanned_files": len(selected),
+                                 "skipped_files": max(0, expected - len(selected)),
+                                 "error_count": sum(item.get("errors", 0) for item in reports),
+                                 "skip_reasons": sorted(set(reason for item in reports for reason in item.get("skip_reasons", []))),
                                  "max_files": args.max_files, "fair_root_quota": fair_root_quota,
                                  "timeout": time.monotonic() >= deadline},
                                 sort_keys=True) + "\n")

@@ -52,6 +52,13 @@ def main():
     assert {"external_input", "decode_transform", "dynamic_code", "command_execution", "web_registration"} <= set(dotnet["capabilities"])
     node = results["node-python-mock.txt"]
     assert {"external_input", "decode_transform", "command_execution", "file_write"} <= set(node["capabilities"])
+    extensionless = helper.analyze_bytes("/var/www/.cache/handler", b'<?php $x=$_POST["x"]; eval(base64_decode($x)); system($x);', args())
+    assert extensionless["language"] == "php"
+    assert extensionless["classification"] == "HIGH_RISK_STRUCTURE"
+    node_noext = helper.analyze_bytes("/tmp/service", b'#!/usr/bin/env node\nrequire("child_process").exec(req.query.x)', args())
+    assert node_noext["language"] == "nodejs"
+    python_noext = helper.analyze_bytes("/tmp/worker", b'#!/usr/bin/env python3\nimport subprocess\nsubprocess.run(request.args["x"], shell=True)', args())
+    assert python_noext["language"] == "python"
 
     with tempfile.TemporaryDirectory(prefix="secscope-static-test-") as temporary:
         base = pathlib.Path(temporary)
@@ -74,7 +81,7 @@ def main():
         completed = subprocess.run([sys.executable, str(HELPER), "--input-list", str(candidates), "--output-jsonl", str(output), "--max-files", "1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         assert completed.returncode == 0, completed.stderr
         document = json.loads(output.read_text(encoding="utf-8").splitlines()[0])
-        assert document["detector_version"] == "1.0" and document["status"] == "SUCCESS"
+        assert document["detector_version"] == "1.1.0" and document["status"] == "SUCCESS"
     print("STATIC_ANALYZER_OK")
     return 0
 

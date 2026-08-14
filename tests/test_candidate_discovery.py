@@ -17,6 +17,7 @@ with tempfile.TemporaryDirectory(prefix="secscope-discovery-") as temporary:
         roots.append(root)
         for item in range(8):
             (root / ("f%d.php" % item)).write_text("fixture", encoding="utf-8")
+        (root / "extensionless").write_text("<?php echo 'fixture';", encoding="utf-8")
     excluded = roots[0] / "excluded"
     excluded.mkdir()
     (excluded / "skip.php").write_text("fixture", encoding="utf-8")
@@ -33,9 +34,12 @@ with tempfile.TemporaryDirectory(prefix="secscope-discovery-") as temporary:
     assert completed.returncode == 0, completed.stderr
     selected = candidates.read_text(encoding="utf-8").splitlines()
     assert len(selected) == 6
+    assert len(selected) == len(set(selected))
     assert all(any(path.startswith(str(root)) for path in selected) for root in roots)
     assert not any(path.startswith(str(excluded)) for path in selected)
     reports = [json.loads(line) for line in coverage.read_text(encoding="utf-8").splitlines()]
     assert reports[-1]["fair_root_quota"] == 2
+    assert reports[-1]["expected_files"] >= reports[-1]["scanned_files"] == 6
+    assert reports[-1]["skipped_files"] > 0
+    assert "budget" in reports[-1]["skip_reasons"]
 print("CANDIDATE_DISCOVERY_OK")
-

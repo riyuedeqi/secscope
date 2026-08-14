@@ -23,7 +23,7 @@ bool excluded(const ScannerConfig& config, const char* name) {
 }
 bool candidate_extension(const ScannerConfig& config, const std::string& path) {
     auto dot = path.find_last_of('.');
-    if (dot == std::string::npos) return false;
+    if (dot == std::string::npos || path.find_last_of('/') > dot) return true;
     std::string extension = path.substr(dot + 1);
     std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     for (auto allowed : config.extensions) {
@@ -39,6 +39,13 @@ std::int64_t score(const ScannerConfig& config, const std::string& path, const s
     if (candidate_extension(config, path)) { value += 40; why.emplace_back("SUSPICIOUS_EXTENSION"); }
     if (path.rfind("/tmp/", 0) == 0 || path.rfind("/var/tmp/", 0) == 0 || path.rfind("/dev/shm/", 0) == 0) {
         value += 90; why.emplace_back("TMP_EXECUTABLE");
+    }
+    if (path.rfind("/var/www/", 0) == 0 || path.rfind("/srv/www/", 0) == 0 || path.rfind("/home/", 0) == 0) {
+        value += 80; why.emplace_back("WEB_OR_USER_ROOT");
+    }
+    if (!path.empty() && path.find_last_of('/') != std::string::npos &&
+        path.substr(path.find_last_of('/') + 1).find('.') == std::string::npos) {
+        value += 45; why.emplace_back("EXTENSIONLESS_CONTENT");
     }
     if (path.rfind("/etc/", 0) == 0 || path.find("/.ssh/authorized_keys") != std::string::npos) {
         value += 100; why.emplace_back("PERSISTENCE_PATH");

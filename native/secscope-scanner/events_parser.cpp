@@ -246,9 +246,9 @@ std::string audit_syscall_name(const std::string& arch, const std::string& sysca
         return std::string{};
     };
     std::string name;
-    if (normalized == "c000003e") name = lookup({{59, "execve"}, {42, "connect"}, {2, "open"}, {257, "openat"}, {1, "write"}, {82, "rename"}, {87, "unlink"}, {90, "chmod"}, {101, "ptrace"}, {272, "unshare"}, {308, "setns"}, {175, "init_module"}, {313, "finit_module"}, {311, "process_vm_writev"}});
+    if (normalized == "c000003e") name = lookup({{59, "execve"}, {42, "connect"}, {2, "open"}, {257, "openat"}, {1, "write"}, {82, "rename"}, {87, "unlink"}, {90, "chmod"}, {101, "ptrace"}, {272, "unshare"}, {308, "setns"}, {319, "memfd_create"}, {175, "init_module"}, {313, "finit_module"}, {311, "process_vm_writev"}});
     else if (normalized == "40000003") name = lookup({{11, "execve"}, {102, "socketcall"}, {5, "open"}, {295, "openat"}, {4, "write"}, {38, "rename"}, {10, "unlink"}, {15, "chmod"}, {26, "ptrace"}, {346, "setns"}, {310, "unshare"}, {128, "init_module"}, {350, "finit_module"}, {348, "process_vm_writev"}});
-    else if (normalized == "c00000b7") name = lookup({{221, "execve"}, {203, "connect"}, {56, "openat"}, {64, "write"}, {38, "renameat"}, {35, "unlinkat"}, {53, "fchmodat"}, {117, "ptrace"}, {97, "unshare"}, {268, "setns"}, {105, "init_module"}, {273, "finit_module"}, {271, "process_vm_writev"}});
+    else if (normalized == "c00000b7") name = lookup({{221, "execve"}, {203, "connect"}, {56, "openat"}, {64, "write"}, {38, "renameat"}, {35, "unlinkat"}, {53, "fchmodat"}, {117, "ptrace"}, {97, "unshare"}, {279, "memfd_create"}, {105, "init_module"}, {273, "finit_module"}, {271, "process_vm_writev"}});
     if (!name.empty()) return name;
     if (unmapped) *unmapped = true;
     return {};

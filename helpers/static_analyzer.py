@@ -26,7 +26,7 @@ import urllib.parse
 import zipfile
 import zlib
 
-DETECTOR_VERSION = "1.0"
+DETECTOR_VERSION = "1.1.0"
 TEXT_LIMIT = 2 * 1024 * 1024
 LONG_LINE_LIMIT = 32768
 
@@ -222,6 +222,14 @@ def language_for(name, text, data):
     if language == "unknown":
         if "<?php" in text.lower():
             language = "php"
+        elif re.search(r"<%(?:@|=)?|<jsp:|jakarta\.servlet|javax\.servlet", text, re.I):
+            language = "java"
+        elif re.search(r"<%|asp\.net|server\.createobject|request\.querystring", text, re.I):
+            language = "asp"
+        elif re.search(r"(?:#!/usr/bin/env\s+node|require\s*\(['\"](?:http|child_process)|module\.exports)", text, re.I):
+            language = "nodejs"
+        elif re.search(r"(?:^#!.*python|import\s+(?:os|socket|subprocess)|from\s+flask\s+import)", text, re.I | re.M):
+            language = "python"
         elif re.search(r"<%@\s*(?:page|webhandler|webservice)", text, re.I):
             language = "java" if "language=\"java" in text.lower() else "dotnet"
         elif data[:2] == b"MZ":

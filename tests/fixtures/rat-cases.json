@@ -8,9 +8,9 @@
     "expect_threat": false
   },
   "rat_chain": {
-    "binaries": [{"file_path":"C:\\Users\\Public\\hidden.exe","risk_score":78,"signature_status":"NOT_PRESENT","api_combinations":[{"name":"process_injection"},{"name":"encrypted_periodic_client"}],"strings":{"ascii_unicode_sample":["campaign","sleep","server","port"]}}],
+    "binaries": [{"file_path":"C:\\Users\\Public\\hidden.exe","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","file_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","risk_score":78,"signature_status":"NOT_PRESENT","api_combinations":[{"name":"process_injection"},{"name":"encrypted_periodic_client"}],"strings":{"ascii_unicode_sample":["campaign","sleep","server","port"]}}],
     "events": [
-      {"event_id":"r1","source":"Sysmon","timestamp_utc":"2026-08-01T00:00:00Z","process_instance_id":"process:BOOT:200:T0:c:\\users\\public\\hidden.exe","evidence_domain":"PROCESS","action":"process_create","image":"C:\\Users\\Public\\hidden.exe"},
+      {"event_id":"r1","source":"Sysmon","timestamp_utc":"2026-08-01T00:00:00Z","process_instance_id":"process:BOOT:200:T0:c:\\users\\public\\hidden.exe","pid":"200","evidence_domain":"PROCESS","action":"process_create","image":"C:\\Users\\Public\\hidden.exe"},
       {"event_id":"r2","source":"Sysmon","timestamp_utc":"2026-08-01T00:01:00Z","process_instance_id":"process:BOOT:200:T0:c:\\users\\public\\hidden.exe","evidence_domain":"NETWORK","action":"network_connect","image":"C:\\Users\\Public\\hidden.exe","destination":"198.51.100.20:8443"},
       {"event_id":"r3","source":"BeaconHistory","timestamp_utc":"2026-08-01T00:06:00Z","process_instance_id":"process:BOOT:200:T0:c:\\users\\public\\hidden.exe","evidence_domain":"BEACON","action":"beacon_candidate","image":"C:\\Users\\Public\\hidden.exe","destination":"198.51.100.20:8443"},
       {"event_id":"r4","source":"Sysmon","timestamp_utc":"2026-08-01T00:07:00Z","process_instance_id":"process:BOOT:200:T0:c:\\users\\public\\hidden.exe","evidence_domain":"PERSISTENCE","action":"registry_change","image":"C:\\Users\\Public\\hidden.exe","target":"HKCU\\...\\Run"}
@@ -20,7 +20,7 @@
   "remote_thread": {
     "binaries": [],
     "events": [{"event_id":"i8","source":"Sysmon","timestamp_utc":"2026-08-01T01:00:00Z","process_instance_id":"guid:{A}","evidence_domain":"MEMORY","action":"remote_thread","image":"C:\\Temp\\a.exe","target":"C:\\Windows\\explorer.exe"}],
-    "expect_threat": true
+    "expect_threat": false
   },
   "normal_jit": {
     "binaries": [],

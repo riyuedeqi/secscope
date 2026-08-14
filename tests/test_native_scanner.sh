@@ -39,16 +39,18 @@ if [[ -x "$SCANNER" ]]; then
   printf '%b\n' \
     'auditd\taudit(1767225600.100:10): arch=c000003e syscall=59 pid=999999 ppid=1 auid=1000 exe="/bin/sh" type=SYSCALL' \
     'auditd\taudit(1767225600.100:11): arch=c000003e syscall=42 pid=999998 ppid=1 auid=1000 exe="/bin/curl" type=SYSCALL' \
+    'auditd\taudit(1767225600.100:12): arch=c000003e syscall=319 pid=999997 ppid=1 auid=1000 exe="/tmp/fixture" type=SYSCALL' \
     'auditd\taudit(1767225600.100:10): type=PATH name="/tmp/second"' \
     'falco\t{"time":"2026-01-01T00:00:00Z","rule":"open sensitive file","priority":"Warning","output_fields":{"proc.pid":"999999","fd.name":"/etc/shadow"}}' \
     > "$fixture/events-input.tsv"
   "$SCANNER" parse-events --input "$fixture/events-input.tsv" --output "$fixture/events-output.jsonl" --audit-output "$fixture/audit-output.tsv" --start-epoch 0 --max-lines 20 > "$fixture/events-summary.json"
-  grep -q '"events":3' "$fixture/events-summary.json"
-  grep -q '"audit":2' "$fixture/events-summary.json"
+  grep -q '"events":4' "$fixture/events-summary.json"
+  grep -q '"audit":3' "$fixture/events-summary.json"
   grep -q 'syscall_name=execve' "$fixture/events-output.jsonl"
+  grep -q 'syscall_name=memfd_create' "$fixture/events-output.jsonl"
   grep -q '"path":"/tmp/second"' "$fixture/events-output.jsonl"
   grep -q '"timestamp_utc":"2026-01-01T00:00:00Z"' "$fixture/events-output.jsonl"
-  test "$(wc -l < "$fixture/audit-output.tsv" | tr -d ' ')" -eq 2
+  test "$(wc -l < "$fixture/audit-output.tsv" | tr -d ' ')" -eq 3
 
   printf '0\t0\t0\t%s\tDEFAULT\n' "$fixture/root/sub/file.sh" > "$fixture/hash-input.tsv"
   "$SCANNER" hash-files --input-list "$fixture/hash-input.tsv" --output "$fixture/hash-output.tsv" --max-files 4 --max-bytes 1048576 --timeout-seconds 10 > "$fixture/hash-summary.json"

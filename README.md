@@ -1,13 +1,23 @@
-# SecScope
+# SecScope v1.1.0 Linux
 
 SecScope 是一个面向 Linux 主机的只读、离线、分层安全巡检与威胁狩猎工具。它通过 Bash 主控、Python 分析器和可选 C++17 Native 加速组件，对文件变化、进程与内存映射、网络连接、持久化、Web 日志、YARA、WebShell/RAT 候选、容器上下文和本地基线进行关联分析，并输出可归档的 HTML 与结构化证据。
 
-> 设计目标：**只读巡检、永久离线、证据可追溯、无自动处置**。SecScope 不主动发起 HTTP/DNS 情报请求，不执行被检测文件，不杀进程、不删文件、不修改业务配置。
+> 设计目标：**只读巡检、永久离线、证据可追溯、无自动处置**。SecScope 不主动发起 HTTP/DNS 情报请求，不执行被检测文件，不杀进程、不删文件、不修改业务配置。扫描不完整、模块失败或关键数据源不可用时，报告会明确降级为 `PARTIAL`、`INCONCLUSIVE` 或 `UNAVAILABLE`。
+
+## v1.1.0 重点变化
+
+- 候选发现采用按 root 公平配额和优先级调度，优先覆盖 Web 根、临时目录、用户目录、隐藏文件及无扩展名文件。
+- 文件与 YARA 报告增加 `expected_files`、`scanned_files`、`skipped_files`、`error_count` 和 `skip_reasons`，不再把扫描失败统计为“未发现”。
+- ELF 分析增加 program segment、RWX、静态链接/去符号、高熵及可疑 API/配置线索。
+- RAT 结果采用严格归因：威胁 Finding 必须能够绑定样本路径、SHA-256、稳定进程实例及运行时或网络证据。
+- WebShell 内容识别扩展到 PHP、JSP/Jakarta、ASP/ASPX、Node.js 和 Python，并覆盖隐藏、改名和无扩展名文件。
+- audit 事件补充 `memfd_create`、`ptrace`、`process_vm_writev` 等行为归一化。
+- Java agent 增加顶层异常隔离及 `SUCCESS/PARTIAL/UNAVAILABLE` 状态，helper 故障不会再被解释为阴性结果。
 
 ## 项目特点
 
 - **离线安全巡检**：默认不联网，不上传样本、哈希、日志或状态。
-- **分层扫描 Profile**：支持 `fast-hunt`、`daily-hunt`、`full` 三种预算和深度。
+- **分层扫描 Profile**：生产扫描支持 `fast-hunt`、`daily-hunt`、`full`；另提供显式清单驱动的测试专用 `corpus-validation`。
 - **跨轮基线**：识别新增、修改、移动、删除文件，并保留生命周期状态。
 - **多源关联**：把文件、进程、socket、内存映射、Web 日志、持久化和本地 IOC/YARA 结果关联到同一实体。
 - **WebShell/RAT 候选分析**：内置 Python 静态分析器、二进制分析器和 RAT 证据图规则。
@@ -101,7 +111,7 @@ SECSCOPE_YARA_TOTAL_TIMEOUT=120
 SECSCOPE_YARA_MAX_FILES=600
 ```
 
-`SECSCOPE_YARA_MODE` 支持：`auto|disabled|lite|standard|full|forensic`。`auto` 映射为：`fast-hunt=disabled`、`daily-hunt=standard`、`full=full`。
+`SECSCOPE_YARA_MODE` 支持：`auto|disabled|lite|standard|full|forensic`。`auto` 映射为：`fast-hunt=disabled`、`daily-hunt=standard`、`full/corpus-validation=full`。
 
 ## 扫描 Profile
 
@@ -110,6 +120,22 @@ SECSCOPE_YARA_MAX_FILES=600
 | `fast-hunt` | 10 分钟至 1 小时 | 文件变化、异常进程、外连、临时目录执行、持久化、轻量日志 | 800 文件、深度 4、哈希 30 MB、45 秒 |
 | `daily-hunt` | 1 至 6 小时 | fast 内容 + 内存轻量取证、WebShell 静态分析、ELF/PE、限量 YARA、扩展日志 | 3000 文件、深度 5、哈希 100 MB、120 秒 |
 | `full` | 1 至 7 天 | 全模块、深度文件扫描、包完整性、完整 YARA、详细报告 | 12000 文件、深度 10、哈希 512 MB、900 秒 |
+| `corpus-validation` | 测试验收，不用于生产巡检 | 仅显式清单的静态、二进制和 YARA 分析；不合并主机候选 | 最多 100000 文件、1800 秒 |
+
+### 测试专用 corpus profile
+
+`corpus-validation` 仅用于隔离 fixture、规则回归和版本验收。它只有在显式选择该 profile，并同时提供 corpus root 与 manifest 时才会启用；systemd 默认服务和定时任务不会选择它。
+
+该 profile 不遍历 `/`、生产 Web 根、临时目录、运行时进程或网络状态，因此其结果只表示清单内文件的静态覆盖，**不能作为真实主机“未发现威胁”的结论，也不能与生产 profile 的检出率直接比较**。
+
+```bash
+sudo bash secscope.sh --profile corpus-validation \
+  --corpus-root /tmp/secscope-corpus \
+  --corpus-manifest /tmp/secscope-corpus-manifest.jsonl \
+  --output /secure/secscope/corpus-validation
+```
+
+manifest 使用 JSONL，每行必须包含 `path`，可选 `sha256`、`sample_id` 和 `lane`。重复、越界、符号链接、缺失、不可读或哈希不匹配的条目会被拒绝，并将覆盖状态降级为 `PARTIAL/INCONCLUSIVE`。
 
 ## 输出目录
 
@@ -226,6 +252,12 @@ rules/ioc-allow.txt
 ```bash
 bash tests/regression.sh
 bash tests/test_file_monitoring.sh
+python3 tests/test_candidate_discovery.py
+python3 tests/test_binary_analyzer.py
+python3 tests/test_rat_engine.py
+python3 tests/test_static_analyzer.py
+python3 tests/test_corpus_profile.py
+bash tests/test_java_agent.sh
 python3 -m py_compile helpers/*.py tests/*.py
 ```
 

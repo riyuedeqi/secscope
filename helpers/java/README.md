@@ -1,11 +1,12 @@
 # Java 深度模式 helper
 
-该源码只用于显式授权的 JVM 启动时 `-javaagent` 模式。SecScope 默认不编译、不加载、不附加到目标 JVM，也不生成 Heap Dump。
+该源码只用于显式授权的 JVM 启动时 `-javaagent` 模式，或由运维人员显式调用的 `agentmain` attach fallback。SecScope 默认不编译、不加载、不自动附加到目标 JVM，也不生成 Heap Dump。初始化或 transformer 异常会被隔离并输出 `PARTIAL` 或 `UNAVAILABLE`，不得解释为“未发现内存马”。
 
 构建后 JAR 的 manifest 需包含：
 
 ```text
 Premain-Class: secscope.runtime.SecScopeRuntimeInspector
+Agent-Class: secscope.runtime.SecScopeRuntimeInspector
 Can-Retransform-Classes: true
 ```
 

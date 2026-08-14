@@ -15,7 +15,7 @@ import os
 import re
 import sys
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 STRONG_ACTIONS = {"remote_thread", "process_tampering", "defender_malware", "malicious_hash"}
 PERSISTENCE_ACTIONS = {"registry_change", "service_create", "scheduled_task_change", "wmi_persistence",
                        "startup_change", "cron_change", "systemd_change", "ld_preload_change", "authorized_keys_change",
@@ -146,7 +146,11 @@ def correlate(binaries, events, intel=None):
     graph_entities = {}; graph_edges = []
     for entity, group in by_entity.items():
         actions = {str(x.get("action", "")) for x in group["events"]}
-        binaries_for_entity = [path_to_binary[p] for p in group["images"] if p in path_to_binary]
+        # Only bind a binary when the event image is an exact normalized path
+        # match.  Names, basenames and unrelated listener/sink events are not
+        # sufficient attribution.
+        binaries_for_entity = [path_to_binary[p] for p in group["images"]
+                               if p in path_to_binary and path_to_binary[p].get("sha256")]
         domains = set(group["domains"]); reasons = []; counter = []; gaps = []
         score = 0
         binary_score = max([int(x.get("risk_score", 0)) for x in binaries_for_entity] or [0])
@@ -186,8 +190,12 @@ def correlate(binaries, events, intel=None):
             score = max(70, score)
         score = min(100, score)
         independent_events = len(group["event_ids"])
-        threat = len(domains) >= 3 and independent_events >= 3 and score >= 55
-        if strong: threat = True
+        has_sample_binding = any(binary.get("file_path") and binary.get("sha256") for binary in binaries_for_entity)
+        has_network_binding = bool(public_profiles or beacon_profiles)
+        has_runtime_binding = bool(actions.intersection(MEMORY_ACTIONS | PERSISTENCE_ACTIONS | STRONG_ACTIONS))
+        threat = (has_sample_binding and has_runtime_binding and (has_network_binding or bool(strong)) and
+                  len(domains) >= 3 and independent_events >= 3 and score >= 55)
+        if strong and has_sample_binding: threat = True
         finding_type = "SECURITY_THREAT" if threat else "SECURITY_ANOMALY"
         severity = "CRITICAL" if threat and score >= 85 else "HIGH" if threat else "MEDIUM" if score >= 30 else "LOW"
         graph_entities[entity] = {"id": entity, "type": "process_entity", "images": images}
@@ -201,6 +209,11 @@ def correlate(binaries, events, intel=None):
                    "risk_score": score, "evidence_domains": sorted(d for d in domains if d),
                    "event_ids": sorted(group["event_ids"]), "evidence_sources": sorted(group["sources"]),
                    "file_evidence": binaries_for_entity, "process_evidence": group["events"],
+                   "sample_bindings": [{"sample_path": b.get("file_path"), "sha256": b.get("sha256"),
+                                        "pid": e.get("pid"), "process_instance_id": entity,
+                                        "network_tuples": [p.get("destination") for p in profile_map.get(entity, [])],
+                                        "event_ids": sorted(group["event_ids"])}
+                                       for b in binaries_for_entity for e in group["events"] if e.get("pid")],
                    "network_evidence": profile_map.get(entity, []),
                    "memory_evidence": [e for e in group["events"] if str(e.get("action", "")) in MEMORY_ACTIONS],
                    "persistence_evidence": [e for e in group["events"] if str(e.get("action", "")) in PERSISTENCE_ACTIONS],

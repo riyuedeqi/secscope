@@ -17,7 +17,7 @@ import struct
 import sys
 import time
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 MAX_STRINGS = 512
 MAX_TABLE_ITEMS = 256
 MAX_SECTIONS = 96
@@ -40,7 +40,7 @@ DYNAMIC_RESOLVER = [
 LINUX_INJECTION = [
     {"ptrace", "process_vm_writev"}, {"ptrace", "/proc/", "/mem"},
 ]
-NETWORK_APIS = {"socket", "connect", "WSAStartup", "InternetOpenA", "InternetOpenW",
+NETWORK_APIS = {"socket", "connect", "dup2", "WSAStartup", "InternetOpenA", "InternetOpenW",
                 "WinHttpOpen", "curl_easy_init", "getaddrinfo"}
 CRYPTO_MARKERS = {"AES", "RC4", "CryptDecrypt", "BCryptDecrypt", "ChaCha20", "XOR"}
 EXEC_MARKERS = {"CreateProcessA", "CreateProcessW", "ShellExecuteA", "ShellExecuteW",
@@ -139,6 +139,11 @@ def api_combinations(imports, strings):
     loop = sorted({"Sleep", "sleep", "beacon"}.intersection(markers))
     if network and crypto and loop:
         combos.append({"name": "encrypted_periodic_client", "apis": network + crypto + loop, "risk": 20})
+    reverse = sorted({"socket", "connect", "dup2", "execve"}.intersection(markers))
+    if len(reverse) >= 3:
+        combos.append({"name": "reverse_connection_shell", "apis": reverse, "risk": 30})
+    if "memfd_create" in markers and ("mmap" in markers or "mprotect" in markers):
+        combos.append({"name": "memfd_loader", "apis": sorted({"memfd_create", "mmap", "mprotect"}.intersection(markers)), "risk": 22})
     hidden = sorted({"SW_HIDE", "CREATE_NO_WINDOW"}.intersection(markers))
     execute = sorted(EXEC_MARKERS.intersection(markers))
     if hidden and execute and network:
@@ -258,7 +263,7 @@ def parse_pe(data):
 
 
 def parse_elf(data):
-    result = {"format": "ELF", "sections": [], "imports": [], "exports": [],
+    result = {"format": "ELF", "sections": [], "segments": [], "imports": [], "exports": [],
               "resources": {}, "parse_status": "PARTIAL", "parse_errors": []}
     try:
         elf_class, encoding = data[4], data[5]
@@ -274,6 +279,20 @@ def parse_elf(data):
             shentsize, shnum, shstrndx = u16(data, 46, endian), u16(data, 48, endian), u16(data, 50, endian)
         shnum = min(shnum, MAX_SECTIONS)
         headers = []
+        phoff = u64(data, 32, endian) if is64 else u32(data, 28, endian)
+        phentsize = u16(data, 54, endian) if is64 else u16(data, 42, endian)
+        phnum = min(u16(data, 56, endian) if is64 else u16(data, 44, endian), 128)
+        for index in range(phnum):
+            off = phoff + index * phentsize
+            if off < 0 or off + phentsize > len(data): break
+            if is64:
+                ptype, flags = u32(data, off, endian), u32(data, off + 4, endian)
+                poff, vaddr, filesz, memsz = (u64(data, off + n, endian) for n in (8, 16, 32, 40))
+            else:
+                ptype, poff, vaddr, filesz, memsz, flags = (u32(data, off + n, endian) for n in (0, 4, 8, 16, 20, 24))
+            result["segments"].append({"type": ptype, "flags": flags, "offset": poff,
+                                       "virtual_address": vaddr, "file_size": filesz, "memory_size": memsz,
+                                       "executable": bool(flags & 1), "writable": bool(flags & 2)})
         for index in range(shnum):
             off = shoff + index * shentsize
             if off < 0 or off + shentsize > len(data): break
@@ -320,7 +339,7 @@ def parse_elf(data):
         result["exports"] = sorted(set(exported))[:MAX_TABLE_ITEMS]
         result.update({"is_64bit": is64, "machine": hex(u16(data, 18, endian)), "entry_point": entry,
                        "section_count": len(result["sections"]), "signature_status": "NOT_APPLICABLE_PACKAGE_TRUST_REQUIRED",
-                       "parse_status": "SUCCESS"})
+                       "parse_status": "SUCCESS", "program_header_count": len(result["segments"])})
     except (ValueError, struct.error, OverflowError, IndexError) as exc:
         result["parse_errors"].append(str(exc))
     return result
@@ -369,6 +388,13 @@ def analyze_path(path, max_bytes):
     anomalies = path_anomalies(path)
     high_entropy = [s["name"] for s in parsed.get("sections", []) if s.get("raw_size", 0) >= 512 and s.get("entropy", 0) >= 7.2]
     if high_entropy: anomalies.append("high_entropy_sections")
+    rwx_segments = [s for s in parsed.get("segments", []) if s.get("readable", True) and s.get("writable") and s.get("executable")]
+    if rwx_segments: anomalies.append("rwx_load_segment")
+    if parsed.get("format") == "ELF":
+        if not parsed.get("imports") and not parsed.get("exports"): anomalies.append("stripped_or_static_linked")
+        if any(s.get("writable") and s.get("executable") for s in parsed.get("segments", [])): anomalies.append("writable_executable_segment")
+        if any(re.search(r"(?i)(beacon|reverse|bind|c2|command|install|persist|delete|self[-_ ]?remove|memfd|ptrace)", x)
+               for x in strings.get("ascii_unicode_sample", [])): anomalies.append("elf_behavior_configuration")
     if parsed.get("overlay_size", 0) >= 4096: anomalies.append("overlay_data")
     if any(re.search(r"(?i)(upx|aspack|themida|vmp|packed)", s.get("name", "")) for s in parsed.get("sections", [])):
         anomalies.append("packer_section_name")

@@ -2,7 +2,7 @@
 # SecScope scan profile and budget policy.
 
 profile_rank() {
-    case "$1" in fast-hunt) printf '1' ;; daily-hunt) printf '2' ;; full) printf '3' ;; *) printf '0' ;; esac
+    case "$1" in fast-hunt) printf '1' ;; daily-hunt) printf '2' ;; full) printf '3' ;; corpus-validation) printf '4' ;; *) printf '0' ;; esac
 }
 
 apply_scan_profile() {
@@ -31,6 +31,14 @@ apply_scan_profile() {
             EVENT_WINDOW_MINUTES=1440; PROFILE_STATIC_ANALYSIS=true; PROFILE_YARA_ENABLED=true
             PROFILE_PACKAGE_INTEGRITY=true; PROFILE_DEEP_FILESYSTEM=true
             ;;
+        corpus-validation)
+            RUN_MODE=Hunt; MODULE_TOTAL=1
+            FILE_MAX_FILES=100000; FILE_MAX_DEPTH=1; FILE_MAX_HASH_BYTES=$((512 * 1024 * 1024)); FILE_TIMEOUT_SECONDS=1800
+            FILE_RECENT_DAYS=0; FILE_SMALL_PRIORITY_BYTES=$((512 * 1024 * 1024))
+            STATIC_MAX_FILES=100000; STATIC_ROOT_QUOTA=100000; YARA_MAX_FILES=100000; YARA_TOTAL_TIMEOUT=1800
+            EVENT_WINDOW_MINUTES=10; PROFILE_STATIC_ANALYSIS=true; PROFILE_YARA_ENABLED=true
+            PROFILE_PACKAGE_INTEGRITY=false; PROFILE_DEEP_FILESYSTEM=false
+            ;;
         *) return 2 ;;
     esac
     EVENT_WINDOW_MINUTES="${SECSCOPE_EVENT_WINDOW_MINUTES:-$EVENT_WINDOW_MINUTES}"
@@ -40,6 +48,12 @@ apply_scan_profile() {
     apply_resource_budget
     STATIC_MAX_FILES="${SECSCOPE_STATIC_MAX_FILES:-$STATIC_MAX_FILES}"
     STATIC_ROOT_QUOTA="${SECSCOPE_STATIC_ROOT_QUOTA:-$STATIC_ROOT_QUOTA}"
+    if [ "$SCAN_PROFILE" = corpus-validation ]; then
+        [ -n "${SECSCOPE_STATIC_MAX_FILES+x}" ] || STATIC_MAX_FILES=100000
+        [ -n "${SECSCOPE_STATIC_ROOT_QUOTA+x}" ] || STATIC_ROOT_QUOTA=100000
+        [ -n "${SECSCOPE_YARA_MAX_FILES+x}" ] || YARA_MAX_FILES=100000
+        [ -n "${SECSCOPE_YARA_TOTAL_TIMEOUT+x}" ] || YARA_TOTAL_TIMEOUT=1800
+    fi
 }
 
 apply_resource_budget() {
@@ -76,6 +90,10 @@ apply_resource_budget() {
                 [ "$YARA_MAX_FILES" -le 3500 ] || YARA_MAX_FILES=3500
                 FILE_TIMEOUT_SECONDS=300; YARA_TOTAL_TIMEOUT=300
                 ;;
+            corpus-validation)
+                # Corpus size is explicit and deterministic; do not silently
+                # lower its limits based on host sizing.
+                ;;
         esac
         RESOURCE_BUDGET_REASON="${RESOURCE_BUDGET_REASON};automatic_constrained_limits=true"
     fi
@@ -109,7 +127,7 @@ resolve_yara_mode() {
     requested=$(printf '%s' "$YARA_MODE_REQUESTED" | tr '[:upper:]' '[:lower:]')
     case "$requested" in
         auto)
-            case "$SCAN_PROFILE" in fast-hunt) YARA_MODE=disabled ;; daily-hunt) YARA_MODE=standard ;; full) YARA_MODE=full ;; esac
+            case "$SCAN_PROFILE" in fast-hunt) YARA_MODE=disabled ;; daily-hunt) YARA_MODE=standard ;; full|corpus-validation) YARA_MODE=full ;; esac
             ;;
         disabled|lite|standard|full|forensic) YARA_MODE="$requested" ;;
         *) log_error 'SECSCOPE_YARA_MODE 仅支持 auto、disabled、lite、standard、full 或 forensic'; return 2 ;;
@@ -152,6 +170,7 @@ profile_module_enabled() {
         fast-hunt:system|fast-hunt:process|fast-hunt:network|fast-hunt:persistence|fast-hunt:filesystem|fast-hunt:logs) return 0 ;;
         daily-hunt:system|daily-hunt:users|daily-hunt:process|daily-hunt:network|daily-hunt:rootkit|daily-hunt:persistence|daily-hunt:filesystem|daily-hunt:services|daily-hunt:logs|daily-hunt:memory) return 0 ;;
         full:*) return 0 ;;
+        corpus-validation:filesystem) return 0 ;;
     esac
     return 1
 }

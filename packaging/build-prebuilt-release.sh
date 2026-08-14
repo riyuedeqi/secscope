@@ -13,14 +13,14 @@ VERSION=$4
 case "$DISTRO" in ubuntu|centos) ;; *) printf 'Unsupported distro: %s\n' "$DISTRO" >&2; exit 2 ;; esac
 case "$ARCH" in linux-amd64) label=amd64 ;; linux-arm64) label=arm64 ;; *) printf 'Unsupported arch: %s\n' "$ARCH" >&2; exit 2 ;; esac
 
-NAME="secscope-v1.0-${DISTRO}-${label}-prebuilt-${VERSION}"
+NAME="secscope-v1.1-${DISTRO}-${label}-prebuilt-${VERSION}"
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/secscope-prebuilt.XXXXXX")
 trap 'rm -rf -- "$STAGE"' EXIT
 DEST="$STAGE/$NAME"
 mkdir -p "$DEST" "$ROOT/dist"
 
 tar --no-xattrs --dereference -C "$ROOT" -cf - \
-    --exclude='./dist' --exclude='./prebuilt' --exclude='./archive' --exclude='./work' --exclude='./reports' --exclude='./.git' \
+    --exclude='./dist' --exclude='./prebuilt' --exclude='./archive' --exclude='./work' --exclude='./reports' --exclude='./.scan-reports' --exclude='./.git' \
     --exclude='*/__pycache__' --exclude='*.pyc' --exclude='*.o' \
     --exclude='./runtime/PLATFORM' --exclude='./runtime/linux-amd64' --exclude='./runtime/linux-arm64' \
     --exclude='./native/secscope-scanner/scanner' \
