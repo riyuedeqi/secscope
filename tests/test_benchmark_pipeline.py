@@ -17,6 +17,9 @@ def main():
         os.makedirs(runs)
         os.makedirs(raw)
         open(os.path.join(raw, "sample.txt"), "w").write("evidence\n")
+        json.dump({"input_candidates": 10, "web_candidates": 6, "binary_candidates": 2,
+                   "yara_candidates": 10, "unreadable_or_unstable": 0},
+                  open(os.path.join(raw, "static-routing-summary.json"), "w"))
         time_file = os.path.join(temp, "time.txt")
         open(time_file, "w").write(
             "User time (seconds): 1.25\nSystem time (seconds): 0.75\n"
@@ -55,6 +58,9 @@ def main():
         summary = data["summaries"][0]
         assert summary["median"]["wall_seconds"] == 2.5
         assert summary["median_work"]["files_traversed"] == 10
+        assert summary["median_work"]["static_web_candidates"] == 6
+        assert summary["median_work"]["static_binary_candidates"] == 2
+        assert summary["median_work"]["static_yara_candidates"] == 10
         assert summary["median_stages_seconds"]["inventory"] == 1.25
         assert summary["process_count"]["process_creations"] == 7
         assert data["runs"][0]["integrity"] == "PASS"

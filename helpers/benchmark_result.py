@@ -58,6 +58,15 @@ def parse_metrics(path):
     return {key: round(value / 1_000_000, 6) for key, value in stages.items()}, summary
 
 
+def read_json(path):
+    try:
+        with open(path, encoding="utf-8") as stream:
+            value = json.load(stream)
+            return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--time-file", required=True)
@@ -81,6 +90,7 @@ def main():
     stages, counters = parse_metrics(args.metrics_file)
     raw_root = os.path.join(args.output_dir, "raw")
     raw_files = sum(len(files) for _, _, files in os.walk(raw_root)) if os.path.isdir(raw_root) else 0
+    routing = read_json(os.path.join(raw_root, "static-routing-summary.json"))
     result = {
         "schema_version": 1,
         "engine": "bash",
@@ -105,6 +115,11 @@ def main():
             "socket_snapshots": counters.get("socket_snapshots", 0),
             "fallback_count": counters.get("fallback_count", 0),
             "raw_file_count": raw_files,
+            "static_input_candidates": routing.get("input_candidates", 0),
+            "static_web_candidates": routing.get("web_candidates", 0),
+            "static_binary_candidates": routing.get("binary_candidates", 0),
+            "static_yara_candidates": routing.get("yara_candidates", 0),
+            "static_route_unreadable": routing.get("unreadable_or_unstable", 0),
         },
         "scan": {
             "coverage_percent": status.get("coverage_percent"),

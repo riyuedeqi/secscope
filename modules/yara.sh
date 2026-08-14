@@ -53,6 +53,7 @@ initialize_yara_capability() {
     [ "$EVENT_SOURCE_YARA" = AVAILABLE ] || mark_current_module_partial "yara_unavailable:${YARA_CAPABILITY_ERROR}"
 }
 scan_yara_candidates() {
+    local candidate_file="${1:-$STATIC_CANDIDATE_FILE}"
     local out="${RAW_DIR}/yara-results.jsonl" errors="${RAW_DIR}/yara-errors.tsv" path source started scanned=0 rc output status limited="" total_timeout="${STATIC_STAGE_TIMEOUT:-$YARA_TOTAL_TIMEOUT}"
     local -a yara_x_compiled=()
     : > "$out"; printf 'path\trule_source\tstatus\texit_code\terror\n' > "$errors"
@@ -73,7 +74,7 @@ scan_yara_candidates() {
             [ "$(wc -l < "$selected" | tr -d ' ')" -lt "$YARA_MAX_FILES" ] || { limited="max_files"; mark_current_module_partial yara_max_files_reached; break; }
             [ $((SECONDS - started)) -lt "$total_timeout" ] || { limited="total_timeout"; mark_current_module_partial yara_total_timeout; break; }
             printf '%s\n' "$path" >> "$selected"
-        done < "$STATIC_CANDIDATE_FILE"
+        done < "$candidate_file"
         scanned=$(wc -l < "$selected" | tr -d ' ')
         for source in "${YARA_RULE_SOURCES[@]}"; do
             remaining=$((total_timeout - (SECONDS - started)))
@@ -159,7 +160,7 @@ scan_yara_candidates() {
         done
         [ "$limited" = total_timeout ] && break
         scanned=$((scanned + 1))
-    done < "$STATIC_CANDIDATE_FILE"
+    done < "$candidate_file"
     for compiled in "${yara_x_compiled[@]}"; do [ -z "$compiled" ] || rm -f "$compiled"; done
     printf '{"scanner":%s,"mode":%s,"scan_status":"SUMMARY","scanned_files":%d,"max_files":%s,"total_timeout_seconds":%s,"elapsed_seconds":%d}\n' \
         "$(json_quote "$YARA_SCANNER")" "$(json_quote "$YARA_MODE")" "$scanned" "$YARA_MAX_FILES" "$total_timeout" "$((SECONDS - started))" >> "$out"

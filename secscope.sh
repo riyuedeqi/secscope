@@ -86,6 +86,7 @@ STATIC_MAX_FILES="${SECSCOPE_STATIC_MAX_FILES:-1600}"
 STATIC_ROOT_QUOTA="${SECSCOPE_STATIC_ROOT_QUOTA:-240}"
 STATIC_ANALYZER_PATH="${PROGRAM_DIR}/helpers/static_analyzer.py"
 BINARY_ANALYZER_PATH="${PROGRAM_DIR}/helpers/binary_analyzer.py"
+STATIC_ROUTER_PATH="${PROGRAM_DIR}/helpers/route_static_candidates.py"
 RAT_ENGINE_PATH="${PROGRAM_DIR}/helpers/rat_engine.py"
 THREAT_INTEL_PATH="${PROGRAM_DIR}/helpers/threat_intel.py"
 THREAT_INTEL_IOC_FILE="${SECSCOPE_THREAT_INTEL_IOC_FILE:-${PROGRAM_DIR}/rules/ioc-local.txt}"
@@ -226,6 +227,9 @@ YARA_ERROR_COUNT=0
 YARA_PROMOTED_FINDINGS=0
 YARA_RULES_LOADED=0
 STATIC_CANDIDATE_FILE=""
+STATIC_WEB_CANDIDATE_FILE=""
+STATIC_BINARY_CANDIDATE_FILE=""
+STATIC_YARA_CANDIDATE_FILE=""
 STATIC_COVERAGE_FILE=""
 STATIC_CANDIDATE_STATUS=NOT_RUN
 STATIC_PIPELINE_DEADLINE=0
@@ -4719,6 +4723,7 @@ PY
 
 
 run_static_language_adapters() {
+    local candidate_file="${1:-$STATIC_CANDIDATE_FILE}"
     local out="${RAW_DIR}/static-analysis.jsonl" summary="${RAW_DIR}/static-analysis-summary.json" projection="${RAW_DIR}/static-analysis-projection.tsv" rc=0 native_status=SUCCESS stage_timeout="${STATIC_STAGE_TIMEOUT:-$YARA_TOTAL_TIMEOUT}" expected_count=0 scanned_count=0
     if [ "$stage_timeout" -le 0 ]; then
         printf '{"detector":"secscope-bounded-static","status":"PARTIAL","timeout":true,"scanned_files":0,"reason":"shared_pipeline_budget_exhausted"}\n' > "$out"
@@ -4733,13 +4738,13 @@ run_static_language_adapters() {
         mark_current_module_partial static_language_adapters_unavailable
         return 0
     fi
-    run_with_timeout "$((stage_timeout + 2))" "$NATIVE_SCANNER_PATH" analyze-static --input-list "$STATIC_CANDIDATE_FILE" \
+    run_with_timeout "$((stage_timeout + 2))" "$NATIVE_SCANNER_PATH" analyze-static --input-list "$candidate_file" \
         --output-jsonl "$out" --projection-tsv "$projection" --max-files "$STATIC_MAX_FILES" --timeout-seconds "$stage_timeout" \
         --max-bytes 4194304 --max-decode-depth 3 --max-decoded-bytes 4194304 \
         --max-archive-members 200 --max-archive-bytes 33554432 --max-compression-ratio 50 > "$summary" 2>&1 || rc=$?
     chmod 600 "$out" "$summary" 2>/dev/null || true
     grep -Eq '"status"[[:space:]]*:[[:space:]]*"PARTIAL"' "$summary" && native_status=PARTIAL || true
-    expected_count=$(wc -l < "$STATIC_CANDIDATE_FILE" | tr -d ' ')
+    expected_count=$(wc -l < "$candidate_file" | tr -d ' ')
     scanned_count=$(python3 - "$summary" <<'PY' 2>/dev/null || printf 0
 import json, sys
 print(int(json.load(open(sys.argv[1], encoding="utf-8")).get("scanned_files", 0) or 0))
@@ -4775,6 +4780,7 @@ PY
 }
 
 run_binary_analyzers() {
+    local candidate_file="${1:-$STATIC_CANDIDATE_FILE}"
     local out="${RAW_DIR}/binary-analysis.jsonl" summary="${RAW_DIR}/binary-analysis-summary.json" enriched="${RAW_DIR}/binary-analysis-enriched.tsv" projection="${RAW_DIR}/binary-analysis-projection.tsv" rc=0 native_status=SUCCESS stage_timeout="${STATIC_STAGE_TIMEOUT:-$YARA_TOTAL_TIMEOUT}"
     if [ "$stage_timeout" -le 0 ]; then
         printf '{"detector":"SecScope.BinaryAnalyzer","status":"PARTIAL","scanned":0,"reason":"shared_pipeline_budget_exhausted"}\n' > "$out"
@@ -4791,7 +4797,7 @@ run_binary_analyzers() {
         mark_current_module_partial binary_analyzer_unavailable
         return 0
     fi
-    run_with_timeout "$((stage_timeout + 2))" "$NATIVE_SCANNER_PATH" analyze-binary --input-list "$STATIC_CANDIDATE_FILE" \
+    run_with_timeout "$((stage_timeout + 2))" "$NATIVE_SCANNER_PATH" analyze-binary --input-list "$candidate_file" \
         --output-jsonl "$out" --projection-tsv "$projection" --max-files "$YARA_MAX_FILES" --max-bytes 33554432 --timeout-seconds "$stage_timeout" > "$summary" 2>&1 || rc=$?
     printf 'file_path\tformat\tsha256\tmd5\tpackage_owner\tsignature_status\trisk_score\tapi_combinations\tstructural_anomalies\n' > "$enriched"
     while IFS=$'\t' read -r path format sha md5 signature score combos anomalies; do
@@ -4818,6 +4824,38 @@ run_binary_analyzers() {
     fi
 }
 
+route_static_candidates() {
+    local summary="${RAW_DIR}/static-routing-summary.json" rc=0 candidate_count=0 route_status=SUCCESS
+    STATIC_WEB_CANDIDATE_FILE="${RAW_DIR}/static-web-candidates.txt"
+    STATIC_BINARY_CANDIDATE_FILE="${RAW_DIR}/static-binary-candidates.txt"
+    STATIC_YARA_CANDIDATE_FILE="${RAW_DIR}/static-yara-candidates.txt"
+    candidate_count=$(wc -l < "$STATIC_CANDIDATE_FILE" 2>/dev/null | tr -d ' '); candidate_count=${candidate_count:-0}
+    if command -v python3 >/dev/null 2>&1 && [ -r "$STATIC_ROUTER_PATH" ]; then
+        run_with_timeout 30 python3 "$STATIC_ROUTER_PATH" --input-list "$STATIC_CANDIDATE_FILE" \
+            --web-output "$STATIC_WEB_CANDIDATE_FILE" --binary-output "$STATIC_BINARY_CANDIDATE_FILE" \
+            --yara-output "$STATIC_YARA_CANDIDATE_FILE" --summary "$summary" > "${RAW_DIR}/static-routing.log" 2>&1 || rc=$?
+    else
+        rc=125
+    fi
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+        route_status=PARTIAL
+        cp "$STATIC_CANDIDATE_FILE" "$STATIC_WEB_CANDIDATE_FILE"
+        cp "$STATIC_CANDIDATE_FILE" "$STATIC_BINARY_CANDIDATE_FILE"
+        cp "$STATIC_CANDIDATE_FILE" "$STATIC_YARA_CANDIDATE_FILE"
+        printf '{"schema_version":1,"router":"fallback-all","status":"PARTIAL","input_candidates":%d,"web_candidates":%d,"binary_candidates":%d,"yara_candidates":%d,"reason":"router_exit_%d"}\n' \
+            "$candidate_count" "$candidate_count" "$candidate_count" "$candidate_count" "$rc" > "$summary"
+        mark_current_module_partial "static_router_fallback_exit_${rc}"
+    elif [ "$rc" -eq 2 ]; then
+        route_status=PARTIAL
+        mark_current_module_partial static_router_unreadable_or_unstable_candidates
+    fi
+    chmod 600 "$STATIC_WEB_CANDIDATE_FILE" "$STATIC_BINARY_CANDIDATE_FILE" "$STATIC_YARA_CANDIDATE_FILE" "$summary" "${RAW_DIR}/static-routing.log" 2>/dev/null || true
+    record_raw_status 'static-routing-summary.json' "$route_status" filesystem "router_exit=${rc};high_recall_yara_lane=true"
+    record_raw_status 'static-web-candidates.txt' "$route_status" filesystem 'L1 text/archive/web routing'
+    record_raw_status 'static-binary-candidates.txt' "$route_status" filesystem 'L1 ELF/PE magic routing'
+    record_raw_status 'static-yara-candidates.txt' "$route_status" yara 'all readable regular candidates'
+}
+
 scan_web_static_structures() {
     local out="${RAW_DIR}/web-static-analysis.tsv" path result score reasons entropy long_line hash owner count=0 projection_hash
     declare -A static_hash_by_path=()
@@ -4828,12 +4866,13 @@ scan_web_static_structures() {
     STATIC_PIPELINE_DEADLINE=$((SECONDS + YARA_TOTAL_TIMEOUT))
     static_pipeline_stage_budget 5 || true
     build_static_candidate_list || true
+    route_static_candidates
     static_pipeline_stage_budget 4 || true
-    scan_yara_candidates
+    scan_yara_candidates "$STATIC_YARA_CANDIDATE_FILE"
     static_pipeline_stage_budget 3 || true
-    run_static_language_adapters
+    run_static_language_adapters "$STATIC_WEB_CANDIDATE_FILE"
     static_pipeline_stage_budget 2 || true
-    run_binary_analyzers
+    run_binary_analyzers "$STATIC_BINARY_CANDIDATE_FILE"
     static_pipeline_stage_budget 1 || true
     if [ -r "${RAW_DIR}/static-analysis-projection.tsv" ]; then
         while IFS=$'\t' read -r path _ _ _ projection_hash _; do [ -n "$path" ] && [ -n "$projection_hash" ] && static_hash_by_path["$path"]="$projection_hash"; done < <(tail -n +2 "${RAW_DIR}/static-analysis-projection.tsv")
@@ -4844,7 +4883,7 @@ scan_web_static_structures() {
             [ -n "${static_hash_by_path[$path]:-}" ] || static_hash_by_path["$path"]="$projection_hash"
         done < <(tail -n +2 "${RAW_DIR}/binary-analysis-projection.tsv")
     fi
-    if [ -s "$STATIC_CANDIDATE_FILE" ]; then
+    if [ -s "$STATIC_WEB_CANDIDATE_FILE" ]; then
         while IFS= read -r path; do
             if [ "$STATIC_PIPELINE_DEADLINE" -gt 0 ] && [ "$SECONDS" -ge "$STATIC_PIPELINE_DEADLINE" ]; then
                 mark_current_module_partial static_pipeline_budget_exhausted_before_shell_scoring
@@ -4866,7 +4905,7 @@ scan_web_static_structures() {
                     "$RUN_STARTED_AT|FILE|static structure score=$score path=$path"
             fi
             count=$((count + 1))
-        done < "$STATIC_CANDIDATE_FILE"
+        done < "$STATIC_WEB_CANDIDATE_FILE"
     fi
     STATIC_PIPELINE_DEADLINE=0; STATIC_STAGE_TIMEOUT=0
     record_raw_status 'web-static-analysis.tsv' SUCCESS filesystem ''
@@ -6155,7 +6194,8 @@ check_filesystem() {
     elif [ "$PROFILE_YARA_ENABLED" = true ]; then
         benchmark_stage_begin yara_pipeline
         build_static_candidate_list || true
-        scan_yara_candidates
+        route_static_candidates
+        scan_yara_candidates "$STATIC_YARA_CANDIDATE_FILE"
         benchmark_stage_end yara_pipeline
         printf 'path\tscore\treasons\tentropy\tlong_line\tsha256\tpackage_owner\tyara\n' > "${RAW_DIR}/web-static-analysis.tsv"
         printf '{"status":"DISABLED","profile":%s,"reason":"yara_only_mode"}\n' "$(json_quote "$SCAN_PROFILE")" > "${RAW_DIR}/static-analysis-summary.json"
@@ -8786,7 +8826,7 @@ install_secscope() {
     } > "${target}.sha256"
     chmod 0400 "${target}.sha256"
     local helper
-    for helper in yara_normalizer.py yara_promoter.py rat_engine.py threat_intel.py corpus_manifest.py; do
+    for helper in yara_normalizer.py yara_promoter.py rat_engine.py threat_intel.py corpus_manifest.py route_static_candidates.py; do
         if [ -f "${PROGRAM_DIR}/helpers/${helper}" ] && [ ! -L "${PROGRAM_DIR}/helpers/${helper}" ]; then
             install -m 0500 "${PROGRAM_DIR}/helpers/${helper}" "/opt/secscope/helpers/${helper}" || {
                 log_error "无法安装只读解析 helper: ${helper}"; return 1;
@@ -9027,7 +9067,7 @@ uninstall_secscope() {
     rm -f /etc/systemd/system/secscope.timer /etc/systemd/system/secscope-fast.timer /etc/systemd/system/secscope-daily.timer /etc/systemd/system/secscope-full.timer /etc/systemd/system/secscope.service /etc/systemd/system/secscope@.service /etc/systemd/system/secscope-cache.service /etc/cron.d/secscope
     systemctl daemon-reload 2>/dev/null || true
     # 报告默认保存在程序目录，卸载时仅删除程序文件，保留 HTML 报告。
-    rm -f /opt/secscope/secscope.sh /opt/secscope/secscope.sh.sha256 /opt/secscope/scanner /opt/secscope/cache-daemon /opt/secscope/cache-client /opt/secscope/native/secscope-scanner/scanner /opt/secscope/native/secscope-cache/cache-daemon /opt/secscope/native/secscope-cache/cache-client /opt/secscope/modules/profile.sh /opt/secscope/modules/yara.sh /opt/secscope/helpers/yara_normalizer.py /opt/secscope/helpers/yara_promoter.py /opt/secscope/helpers/rat_engine.py /opt/secscope/helpers/threat_intel.py /opt/secscope/helpers/corpus_manifest.py /opt/secscope/helpers/java/SecScopeRuntimeInspector.java /opt/secscope/helpers/java/README.md /opt/secscope/rules/ioc-local.txt /opt/secscope/rules/ioc-allow.txt /opt/secscope/rules/yara-forge-core-20260809/yara-rules-core.yar /opt/secscope/runtime/linux-amd64/bin/yr /opt/secscope/runtime/linux-arm64/bin/yr
+    rm -f /opt/secscope/secscope.sh /opt/secscope/secscope.sh.sha256 /opt/secscope/scanner /opt/secscope/cache-daemon /opt/secscope/cache-client /opt/secscope/native/secscope-scanner/scanner /opt/secscope/native/secscope-cache/cache-daemon /opt/secscope/native/secscope-cache/cache-client /opt/secscope/modules/profile.sh /opt/secscope/modules/yara.sh /opt/secscope/helpers/yara_normalizer.py /opt/secscope/helpers/yara_promoter.py /opt/secscope/helpers/rat_engine.py /opt/secscope/helpers/threat_intel.py /opt/secscope/helpers/corpus_manifest.py /opt/secscope/helpers/route_static_candidates.py /opt/secscope/helpers/java/SecScopeRuntimeInspector.java /opt/secscope/helpers/java/README.md /opt/secscope/rules/ioc-local.txt /opt/secscope/rules/ioc-allow.txt /opt/secscope/rules/yara-forge-core-20260809/yara-rules-core.yar /opt/secscope/runtime/linux-amd64/bin/yr /opt/secscope/runtime/linux-arm64/bin/yr
     rmdir /opt/secscope/native/secscope-scanner /opt/secscope/native/secscope-cache /opt/secscope/native /opt/secscope/modules /opt/secscope/helpers/java /opt/secscope/helpers /opt/secscope/rules/yara-forge-core-20260809 /opt/secscope/rules /opt/secscope/runtime/linux-amd64/bin /opt/secscope/runtime/linux-amd64 /opt/secscope/runtime/linux-arm64/bin /opt/secscope/runtime/linux-arm64 /opt/secscope/runtime 2>/dev/null || true
     rmdir /opt/secscope 2>/dev/null || true
     log_info "SecScope 程序已卸载；HTML 报告、状态和配置已保留"

@@ -77,9 +77,17 @@ def main():
     assert "profile_rank() {" not in shell and "initialize_yara_capability() {" not in shell
     assert "find \"$root\"" not in shell[shell.index("scan_web_static_structures()"):
                                                 shell.index("correlate_web_attack_chain()")]
+    static_pipeline = shell[shell.index("scan_web_static_structures()"):
+                            shell.index("correlate_web_attack_chain()")]
+    route_call = static_pipeline.index("route_static_candidates")
+    assert route_call < static_pipeline.index('scan_yara_candidates "$STATIC_YARA_CANDIDATE_FILE"')
+    assert route_call < static_pipeline.index('run_static_language_adapters "$STATIC_WEB_CANDIDATE_FILE"')
+    assert route_call < static_pipeline.index('run_binary_analyzers "$STATIC_BINARY_CANDIDATE_FILE"')
+    assert os.path.isfile(os.path.join(ROOT, "helpers", "route_static_candidates.py"))
     readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
     assert "# SecScope v1.1.0 Linux" in readme
     assert "SECSCOPE_YARA_MODE=auto" in readme and "yara-summary.json" in readme
+    assert "L1 候选路由" in readme
     assert "v3.9.0" not in readme and "v3.4.5" not in readme
     print("SECURITY_CONTRACTS_OK")
 

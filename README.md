@@ -13,6 +13,7 @@ SecScope 是一个面向 Linux 主机的只读、离线、分层安全巡检与�
 - WebShell 内容识别扩展到 PHP、JSP/Jakarta、ASP/ASPX、Node.js 和 Python，并覆盖隐藏、改名和无扩展名文件。
 - audit 事件补充 `memfd_create`、`ptrace`、`process_vm_writev` 等行为归一化。
 - Java agent 增加顶层异常隔离及 `SUCCESS/PARTIAL/UNAVAILABLE` 状态，helper 故障不会再被解释为阴性结果。
+- 静态流水线增加有界 L1 候选路由：文本、Web 源码和归档进入语言分析，ELF/PE 进入二进制分析；YARA 保留全部可读常规文件作为高召回通道。路由失败时回退原始候选全集并标记 `PARTIAL`。
 
 ## 项目特点
 
@@ -169,9 +170,31 @@ raw/events-normalized.jsonl
 raw/yara-results.jsonl
 raw/yara-findings.tsv
 raw/yara-summary.json
+raw/static-routing-summary.json
+raw/static-web-candidates.txt
+raw/static-binary-candidates.txt
+raw/static-yara-candidates.txt
 ```
 
 `raw/` 可能包含命令行、账户、IP、环境变量或 Token，应限制访问和传输范围。
+
+## L1 候选路由实机验证
+
+2026-08-14 在同一台 Ubuntu 24.04 x86_64 主机上，以仓库 `git HEAD` 为基线、仅叠加 L1 路由改动为候选版，复用完全相同的 Native scanner 与 YARA-X 1.19.0，顺序执行了固定 corpus 和 `daily-hunt --no-state`。该结果是单轮工程验证，不代表跨主机生产基准。
+
+固定 corpus 中两版结果完全一致：覆盖率 100%，均产生 6 个 Finding（2 HIGH、4 MEDIUM），YARA 均扫描 6 个文件且零错误。
+
+| Daily 指标 | HEAD 基线 | L1 路由 | 变化 |
+|---|---:|---:|---:|
+| 深度分析器输入总数 | 652 | 321 | -50.8% |
+| User CPU | 117.80 s | 108.11 s | -8.2% |
+| Finding | 216 | 189 | -12.5% |
+| SECURITY_THREAT | 5 | 5 | 不变 |
+| 覆盖率 | 88% | 88% | 不变 |
+| Wall time | 215.80 s | 260.74 s | +20.8% |
+| Max RSS | 285,836 KiB | 285,888 KiB | 基本不变 |
+
+减少的 Finding 主要是 ELF/共享库被 Shell 文本评分误判产生的中危 `WEB-STATIC-STRUCTURE`，5 个 `SECURITY_THREAT` 身份全部保留。路由已经降低无效深度解析和静态噪声，但**尚未证明端到端扫描更快**：当前 daily profile 仍受 YARA 共享时间预算、系统 I/O、日志采集和报告生成影响。后续性能验收应使用相同数据集交叉排序并至少运行三轮，比较中位数而不是引用单轮 wall time。
 
 ## 目录结构
 
