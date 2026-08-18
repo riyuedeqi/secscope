@@ -4,6 +4,88 @@ SecScope 是一个面向 Linux 主机的只读、离线、分层安全巡检与�
 
 > 设计目标：**扫描默认只读、永久离线、证据可追溯、无自动处置**。SecScope 不主动发起 HTTP/DNS 情报请求，不执行被检测文件，不删文件、不修改业务配置。仅当操作员显式提交受权限保护的进程处置请求，并绑定报告中的高置信 `SECURITY_THREAT` 时，Native 组件才会执行隔离、恢复或终止。扫描不完整、模块失败或关键数据源不可用时，报告会明确降级为 `PARTIAL`、`INCONCLUSIVE` 或 `UNAVAILABLE`。
 
+## 环境配置
+
+本项目面向 Linux 环境，推荐使用 Ubuntu 24.04.3 LTS 作为验证基线。
+
+- Python 3.8 及以上，已验证 3.12.3
+- GCC/G++ 13.3.0 或等效 C++17 工具链
+- GNU Make 4.3
+- CMake 3.16+（如使用 CMake 构建 Native 组件）
+- OpenSSL 3.0.13
+- zlib 1.3
+- libarchive 3.7.2
+- nlohmann-json 3.11.3
+
+依赖清单文件：
+
+- `requirements.txt`
+- `requirements-native-ubuntu-24.04.txt`
+
+安装系统依赖：
+
+```bash
+sudo apt-get update
+grep -Ev '^[[:space:]]*(#|$)' requirements-native-ubuntu-24.04.txt | xargs sudo apt-get install --no-install-recommends
+```
+
+Python 层只使用标准库，不需要额外 `pip install`。
+
+## 运行步骤
+
+```bash
+git clone https://github.com/riyuedeqi/secscope.git
+cd secscope
+bash secscope.sh --help
+sudo bash secscope.sh --self-test
+```
+
+运行扫描：
+
+```bash
+sudo bash secscope.sh --profile fast-hunt
+sudo bash secscope.sh --profile daily-hunt
+sudo bash secscope.sh --profile full --output /secure/secscope/full-$(date +%Y%m%d)
+```
+
+如需初始化跨轮基线：
+
+```bash
+sudo bash secscope.sh --init-state --profile daily-hunt
+```
+
+一次性调查可使用无状态模式：
+
+```bash
+sudo bash secscope.sh --no-state --profile full --output /secure/secscope/snapshot
+```
+
+Native 组件可选编译：
+
+```bash
+make -C native/secscope-scanner -j2
+make -C native/secscope-cache -j2
+```
+
+测试命令：
+
+```bash
+bash tests/regression.sh
+python3 tests/test_dependency_manifest.py
+bash tests/test_native_scanner.sh
+bash tests/test_process_control.sh
+```
+
+## 功能说明
+
+- 离线只读巡检，不主动联网，不上传样本、哈希、日志或状态。
+- 分层扫描 Profile：`fast-hunt`、`daily-hunt`、`full`、`corpus-validation`。
+- 关联分析文件变化、进程、socket、内存映射、Web 日志、持久化和本地 IOC/YARA 结果。
+- WebShell/RAT 候选分析覆盖 PHP、JSP/Jakarta、ASP/ASPX、Node.js 和 Python。
+- 可选 C++17 Native 加速，覆盖 scanner 与 cache 组件。
+- 输出 HTML、`findings.json`、`status.json`、`raw/` 证据和 SHA-256 清单。
+- 显式高危进程隔离/终止，默认不自动处置。
+
 ## v1.1.0 重点变化
 
 - 候选发现采用按 root 公平配额和优先级调度，优先覆盖 Web 根、临时目录、用户目录、隐藏文件及无扩展名文件。
@@ -341,6 +423,12 @@ bash tests/test_process_control.sh
 - [测试结果](docs/TEST-RESULTS.md)
 - [RAT 检测设计](docs/RAT-DETECTION-DESIGN.md)
 - [Web 恶意行为检测设计](docs/WEB-MALWARE-DETECTION-DESIGN.md)
+
+## 团队分工
+
+- 丁浩：开发
+- 高郡阳：测试
+- 赵志茹：编写 GUI 界面和材料撰写
 
 ## 安全边界
 
