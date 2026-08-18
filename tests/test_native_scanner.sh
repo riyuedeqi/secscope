@@ -21,6 +21,7 @@ if [[ -x "$SCANNER" ]]; then
   test -s "$fixture/out/file-inventory-current.tsv"
   test -s "$fixture/out/summary.json"
   "$SCANNER" capabilities | grep -q '"native_file_monitor"'
+  "$SCANNER" capabilities | grep -q '"native_process_control"'
 
   printf '%s\t%s\n' \
     '/var/log/nginx/access.log' \

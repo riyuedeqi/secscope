@@ -25,4 +25,5 @@
 | eBPF/内核模块/Rootkit 可见性 | 部分支持 | 部分支持 | Linux 读 bpftool/pinned/ftrace/模块签名/包/哈希；Windows 读驱动/Code Integrity/签名。两者的用户态扫描都不能完全排除内核 Rootkit。 |
 | HTTP→文件→进程→网络→持久化 | 部分支持 | 部分支持 | 只通过稳定实体和有界时间边连接；无 PID 访问日志只作上下文。缺失写入 PID 时链会主动少连而不强绑。 |
 | 报告/状态/证据/跨轮基线 | 支持 | 支持 | 保留 CLI、HTML、status/findings/raw/manifest/SHA-256/白名单/脱敏包字段，增加 RAT 总览、实体图、反证、因果边和 gap。 |
-| 出站网络、自动处置 | 不支持（设计边界） | 不支持（设计边界） | 永久离线；无 HTTP/DNS/上传/Webhook，不杀进程、删文件、修改 IIS/Tomcat/PHP 或安装组件。 |
+| 出站网络、自动处置 | 不支持（设计边界） | 不支持（设计边界） | 永久离线；无 HTTP/DNS/上传/Webhook。扫描不自动杀进程、删文件、修改配置或安装组件。 |
+| 显式高危进程处置 | 支持（Native） | 不适用 | 操作员提供 0600 请求、原始 `findings.json` 和 0600 审计路径；只接受 HIGH 置信的 HIGH/CRITICAL `SECURITY_THREAT`，并校验 boot ID、PID、start ticks、exe、受保护进程和 pidfd。支持 `contain/release/terminate/kill`，默认不被扫描或定时任务调用。 |

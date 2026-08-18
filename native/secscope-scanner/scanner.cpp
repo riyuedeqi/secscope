@@ -123,10 +123,12 @@ int scan(const secscope::ScannerConfig& config, const std::string& checkpoint_pa
 }
 
 int main(int argc, char** argv) {
-    if (argc < 2) { std::cerr << "usage: scanner self-test|capabilities|scan|resume|discover-candidates|parse-web-access|parse-events|filesystem-facts|analyze-binary|analyze-static|hash-files|runtime-snapshot|file-monitor [options]\n"; return 2; }
+    if (argc < 2) { std::cerr << "usage: scanner self-test|capabilities|scan|resume|discover-candidates|parse-web-access|parse-events|filesystem-facts|analyze-binary|analyze-static|hash-files|runtime-snapshot|file-monitor|process-control [options]\n"; return 2; }
     std::string command = argv[1];
     if (secscope::is_native_helper_command(command)) return secscope::run_native_helper(command, argc - 2, argv + 2);
-    if (command == "capabilities") { std::cout << "{\"schema_version\":1,\"protocol_version\":2,\"linux_only\":true,\"openssl\":true,\"hash_analyzer_version\":\"" << secscope::NATIVE_HASH_ANALYZER_VERSION << "\",\"features\":[\"file_inventory\",\"hashing\",\"process_snapshot\",\"socket_snapshot\",\"worker_pool\",\"checkpoint\",\"native_candidate_discovery\",\"native_web_access_parser\",\"native_static_analyzer\",\"native_binary_analyzer\",\"native_hash_files\",\"native_file_monitor\",\"native_runtime_collector\",\"native_filesystem_facts\",\"native_events_parser\"]}\n"; return 0; }
+    // The shell wrapper uses this feature flag to fail closed when an older
+    // scanner binary is paired with a newer process-control request.
+    if (command == "capabilities") { std::cout << "{\"schema_version\":1,\"protocol_version\":2,\"linux_only\":true,\"openssl\":true,\"hash_analyzer_version\":\"" << secscope::NATIVE_HASH_ANALYZER_VERSION << "\",\"features\":[\"file_inventory\",\"hashing\",\"process_snapshot\",\"socket_snapshot\",\"worker_pool\",\"checkpoint\",\"native_candidate_discovery\",\"native_web_access_parser\",\"native_static_analyzer\",\"native_binary_analyzer\",\"native_hash_files\",\"native_file_monitor\",\"native_runtime_collector\",\"native_filesystem_facts\",\"native_events_parser\",\"native_process_control\"]}\n"; return 0; }
     if (command == "self-test") { secscope::ScannerConfig c; c.roots = {"/tmp"}; c.max_files = 4; c.max_depth = 1; c.output_dir = "/tmp/secscope-native-self-test"; secscope::Counters counters; std::vector<secscope::InventoryRecord> records; return secscope::collect_inventory(c, &records, &counters) ? 0 : 1; }
     std::string request, checkpoint = ".secscope-checkpoint.json"; for (int i = 2; i < argc; ++i) { if (std::string(argv[i]) == "--request" && i + 1 < argc) request = argv[++i]; else if (std::string(argv[i]) == "--checkpoint" && i + 1 < argc) checkpoint = argv[++i]; }
     if ((command == "scan" || command == "resume") && request.empty()) { std::cerr << "--request is required\n"; return 2; }

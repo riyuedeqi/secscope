@@ -55,6 +55,9 @@ CORPUS_MANIFEST_HELPER="${PROGRAM_DIR}/helpers/corpus_manifest.py"
 NATIVE_SCANNER_MODE="${SECSCOPE_NATIVE_SCANNER:-on}"
 NATIVE_SCANNER_PATH="${SECSCOPE_NATIVE_SCANNER_PATH:-${PROGRAM_DIR}/native/secscope-scanner/scanner}"
 NATIVE_SCANNER_STATUS="NOT_RUN"
+PROCESS_CONTROL_REQUEST=""
+PROCESS_CONTROL_AUDIT_LOG=""
+PROCESS_CONTROL_FINDINGS=""
 NATIVE_HASH_FILES_READY=false
 NATIVE_FILE_MONITOR_READY=false
 NATIVE_RUNTIME_READY=false
@@ -9399,6 +9402,11 @@ print_usage() {
   --share-package          保留完整证据，并生成同级 *_share 脱敏分享副本
   --file-scan-config FILE  指定 Linux 文件增量监控配置
 
+显式应急处置（默认关闭）:
+  --process-control FILE   执行权限为 0600 的 Native 进程处置请求
+  --findings FILE          产生目标高危进程结论的 findings.json
+  --audit-log FILE         进程处置 JSONL 审计日志；与 --process-control 同时使用
+
 运行与部署:
   --scheduled              systemd 定时运行模式
   --schedule-time HH:MM    安装每日定时任务并指定执行时间
@@ -9596,7 +9604,7 @@ main() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --json) shift ;;
-            --output|--state-dir|--report-root|--file-scan-config|--mode|--profile|--host-role|--corpus-root|--corpus-manifest)
+            --output|--state-dir|--report-root|--file-scan-config|--mode|--profile|--host-role|--corpus-root|--corpus-manifest|--process-control|--findings|--audit-log)
                 if [ $# -lt 2 ] || [ -z "$2" ]; then log_error "$1 需要一个目录参数"; return 2; fi
                 case "$1" in
                     --output) OUTPUT_DIR="$2"; OUTPUT_DIR_EXPLICIT=true ;;
@@ -9608,6 +9616,9 @@ main() {
                     --host-role) HOST_ROLE=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]') ;;
                     --corpus-root) CORPUS_ROOT="$2" ;;
                     --corpus-manifest) CORPUS_MANIFEST_FILE="$2" ;;
+                    --process-control) PROCESS_CONTROL_REQUEST="$2" ;;
+                    --findings) PROCESS_CONTROL_FINDINGS="$2" ;;
+                    --audit-log) PROCESS_CONTROL_AUDIT_LOG="$2" ;;
                 esac
                 shift 2
                 ;;
@@ -9674,6 +9685,24 @@ main() {
     [ "$INSTALL_REQUEST" = false ] || { install_secscope; return $?; }
     [ "$UNINSTALL_REQUEST" = false ] || { uninstall_secscope; return $?; }
     [ "$SELF_TEST" = false ] || { run_self_test; return $?; }
+    # Emergency process control is a separate opt-in path. Keep it outside the
+    # normal scan flow so scheduled scans cannot reach it accidentally.
+    if [ -n "$PROCESS_CONTROL_REQUEST$PROCESS_CONTROL_FINDINGS$PROCESS_CONTROL_AUDIT_LOG" ]; then
+        [ -n "$PROCESS_CONTROL_REQUEST" ] && [ -n "$PROCESS_CONTROL_FINDINGS" ] && [ -n "$PROCESS_CONTROL_AUDIT_LOG" ] || {
+            log_error '--process-control、--findings 与 --audit-log 必须同时使用'
+            return 2
+        }
+        [ -x "$NATIVE_SCANNER_PATH" ] && [ ! -L "$NATIVE_SCANNER_PATH" ] || {
+            log_error "进程处置需要可执行的 native scanner: $NATIVE_SCANNER_PATH"
+            return 1
+        }
+        "$NATIVE_SCANNER_PATH" capabilities 2>/dev/null | grep -q '"native_process_control"' || {
+            log_error 'native scanner 不支持进程处置能力'
+            return 1
+        }
+        "$NATIVE_SCANNER_PATH" process-control --request "$PROCESS_CONTROL_REQUEST" --findings "$PROCESS_CONTROL_FINDINGS" --audit-log "$PROCESS_CONTROL_AUDIT_LOG"
+        return $?
+    fi
     if [ "$STATE_ENABLED" = false ] && { [ "$INIT_STATE" = true ] || [ "$RESET_STATE" = true ]; }; then
         log_error '--no-state 不能与 --init-state 或 --reset-state 同时使用'
         return 2

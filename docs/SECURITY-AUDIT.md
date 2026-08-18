@@ -24,5 +24,14 @@
 
 - helper 只读字节和 Mock/JSON 事件，不执行、import、attach、解密执行或加载未知样本。
 - 不抓包，不主动 DNS，不发起 HTTP，不上传文件、哈希、日志、内存或状态。
-- 不杀进程、删文件、修改业务配置或安装 auditd/Falco/YARA/bpftool。
+- 扫描流程不杀进程、删文件、修改业务配置或安装 auditd/Falco/YARA/bpftool。
 - Gh0st RAT、PlugX 等名称只能在多域结构与本地 IOC 同时支持时作为 `family_hypotheses`，不作无样本确认。
+
+## v1.1 显式进程处置复核（2026-08-17）
+
+- `native/secscope-scanner/process_control.cpp` 提供独立 `process-control` 子命令，不进入扫描或 systemd 定时路径。
+- 处置请求和 `findings.json` 必须是调用者所有、权限 0600 或更严格的常规文件；读取与审计文件使用 `O_NOFOLLOW` 和同一文件描述符 `fstat`，拒绝符号链接与检查后替换。
+- 只接受 Linux schema v3+ 报告中 HIGH 置信的 HIGH/CRITICAL `SECURITY_THREAT`，Finding ID、风险字段和 `process_instance_id` 必须同时匹配；`RESOLVED`、`DEESCALATED` 和 `BASELINE_EXISTING` 不授权处置。
+- 信号发送前重新核验 boot ID、PID、start ticks 和 exe；拒绝 PID 1/2、自身和祖先进程。支持时使用 pidfd，旧内核回退前再次核验实例。
+- 审计日志先持久化 `ATTEMPT`，再发送信号，最后写入 `RESULT`；无法记录处置意图时不执行信号。
+- `contain/release` 使用 `SIGSTOP/SIGCONT`；`terminate` 使用 `SIGTERM`；`kill` 需要精确确认值和 `allow_destructive=true`。

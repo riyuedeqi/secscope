@@ -54,3 +54,19 @@
 - 已修复并回归：目录句柄递归、worker pool 启动/收尾死锁、哈希 worker 栈溢出、特殊文件哈希阻塞。
 - 当前阶段门禁：native 只做预检和 shadow 能力记录，Bash 仍是正式报告路径；完整 Bash/native parity 和生产阶段 benchmark 未完成。
 - `tests/test_native_memory_safety.sh`：Ubuntu 24.04.4 使用 ASan、UBSan、LeakSanitizer 编译并运行 scanner/cache；覆盖超大请求预算、并发哈希、超限协议帧、129 MiB 损坏 cache 快照和 SIGTERM 退出，未检测到泄漏、越界、use-after-free 或未定义行为。
+
+## 显式进程处置验收（2026-08-17）
+
+- Ubuntu 24.04 WSL、G++ 13 完成 Native 全量编译，`capabilities` 输出 `native_process_control`。
+- `tests/test_process_control.sh` 使用无害 `sleep` 进程，通过正式 `secscope.sh` 入口和 Native 子命令验证 `SIGSTOP` 隔离、`SIGCONT` 恢复、`SIGTERM` 终止和显式授权的 `SIGKILL`。
+- 连续 20 轮隔离/恢复全部成功，进程状态每轮均由 `/proc/PID/status` 复核。
+- PID start ticks 不匹配、低危请求、错误确认、PID 1、请求权限 0644、审计符号链接和风险降级 Finding 均被拒绝，测试进程保持运行。
+- 审计日志权限为 0600，每个授权动作均先写 `ATTEMPT`、再写 `RESULT`；44 个动作形成 88 条可解析 JSONL 记录。
+- 非对象 JSON、`RESOLVED` Finding、显式 `SIGKILL`、Linux schema/platform 与活跃生命周期门禁均已回归通过；Windows 侧源码契约、30 个 Python 源文件编译、Native 重编译和 ASan/UBSan/LeakSanitizer 复验均通过。
+- Windows 上 `test_static_candidate_router.py` 和 `test_yara_promoter.py` 当前会因 Linux-only 语义失败：前者依赖 `O_NOFOLLOW` 拒绝符号链接，后者只接收 `/` 开头的 Linux Web 根；测试文件已可读取执行，不再是安全软件拦截。
+
+## 依赖清单验收（2026-08-18）
+
+- `requirements.txt` 明确 Python 层仅使用标准库；`tests/test_dependency_manifest.py` 输出 `DEPENDENCY_MANIFEST_OK`。
+- `requirements-native-ubuntu-24.04.txt` 覆盖 Bash/Python、C++17、Make/CMake、OpenSSL、zlib、libarchive 和 nlohmann-json 构建依赖。
+- Ubuntu 24.04.3、Python 3.12.3、G++ 13.3.0、GNU Make 4.3 和 Native Make 构建链已验证；CMake 需在目标环境另行安装 3.16+。

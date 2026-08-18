@@ -88,6 +88,10 @@ def main():
     assert "# SecScope v1.1.0 Linux" in readme
     assert "SECSCOPE_YARA_MODE=auto" in readme and "yara-summary.json" in readme
     assert "L1 候选路由" in readme
+    assert "native_process_control" in shell
+    assert "--process-control" in shell and "--findings" in shell and "--audit-log" in shell
+    process_control = open(os.path.join(ROOT, "native", "secscope-scanner", "process_control.cpp"), encoding="utf-8").read()
+    assert "O_NOFOLLOW" in process_control and "SIGSTOP" in process_control
     assert "v3.9.0" not in readme and "v3.4.5" not in readme
     print("SECURITY_CONTRACTS_OK")
 

@@ -1,0 +1,8 @@
+# SecScope Python dependency manifest
+#
+# Helpers and tests use Python's standard library only. Keep this file free of
+# package entries so installing it never pulls code from the network.
+#
+# Interpreter baseline:
+#   minimum: Python 3.8
+#   validated: Python 3.12.3 on Ubuntu 24.04.3 LTS

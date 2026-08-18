@@ -1,0 +1,31 @@
+# Ubuntu 24.04 (noble) packages for the complete source and test environment.
+# Install with:
+#   grep -Ev '^[[:space:]]*(#|$)' requirements-native-ubuntu-24.04.txt | \
+#     xargs sudo apt-get install --no-install-recommends
+#
+# Package names are intentionally unpinned. The validated package versions
+# are recorded in docs/DEPENDENCIES.md; exact apt pinning needs a repository
+# snapshot that is kept outside this source repository.
+bash
+coreutils
+findutils
+gawk
+grep
+sed
+procps
+iproute2
+util-linux
+tar
+gzip
+openssl
+python3
+build-essential
+g++
+make
+pkg-config
+cmake
+libssl-dev
+zlib1g-dev
+libarchive-dev
+nlohmann-json3-dev
+systemd

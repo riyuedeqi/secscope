@@ -1,2 +1,9 @@
 # Third-party generated rule bundle; keep diffs compact on GitHub.
 rules/yara-forge-core-20260809/yara-rules-core.yar linguist-generated=true -diff
+
+# Linux entrypoints and integrity manifests must keep release-stable bytes.
+*.sh text eol=lf
+*.py text eol=lf
+*.sha256 text eol=lf
+Makefile text eol=lf
+CMakeLists.txt text eol=lf

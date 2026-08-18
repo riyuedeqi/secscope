@@ -2,6 +2,7 @@
 
 - `docs/CAPABILITY-MATRIX.md`：能力、数据源和环境适配矩阵
 - `docs/PERFORMANCE.md`：性能基线、热点和优化记录
+- `docs/DEPENDENCIES.md`：依赖清单、版本基线和环境复现步骤
 - `docs/SECURITY-AUDIT.md`：安全契约与审计结论
 - `docs/TEST-RESULTS.md`：测试结果和验收记录
 - `docs/RAT-DETECTION-DESIGN.md`：RAT 检测设计

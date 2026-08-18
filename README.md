@@ -2,7 +2,7 @@
 
 SecScope 是一个面向 Linux 主机的只读、离线、分层安全巡检与威胁狩猎工具。它通过 Bash 主控、Python 分析器和可选 C++17 Native 加速组件，对文件变化、进程与内存映射、网络连接、持久化、Web 日志、YARA、WebShell/RAT 候选、容器上下文和本地基线进行关联分析，并输出可归档的 HTML 与结构化证据。
 
-> 设计目标：**只读巡检、永久离线、证据可追溯、无自动处置**。SecScope 不主动发起 HTTP/DNS 情报请求，不执行被检测文件，不杀进程、不删文件、不修改业务配置。扫描不完整、模块失败或关键数据源不可用时，报告会明确降级为 `PARTIAL`、`INCONCLUSIVE` 或 `UNAVAILABLE`。
+> 设计目标：**扫描默认只读、永久离线、证据可追溯、无自动处置**。SecScope 不主动发起 HTTP/DNS 情报请求，不执行被检测文件，不删文件、不修改业务配置。仅当操作员显式提交受权限保护的进程处置请求，并绑定报告中的高置信 `SECURITY_THREAT` 时，Native 组件才会执行隔离、恢复或终止。扫描不完整、模块失败或关键数据源不可用时，报告会明确降级为 `PARTIAL`、`INCONCLUSIVE` 或 `UNAVAILABLE`。
 
 ## v1.1.0 重点变化
 
@@ -24,6 +24,7 @@ SecScope 是一个面向 Linux 主机的只读、离线、分层安全巡检与�
 - **WebShell/RAT 候选分析**：内置 Python 静态分析器、二进制分析器和 RAT 证据图规则。
 - **Native 可选加速**：C++17 scanner/cache 可在目标 Linux 主机上本地编译。
 - **可审计输出**：生成 HTML、`findings.json`、`status.json`、`raw/` 证据和 SHA-256 清单。
+- **显式进程处置**：默认关闭；只接受绑定 `findings.json` 中高置信 HIGH/CRITICAL 威胁和稳定进程实例的 0600 请求，并生成 0600 JSONL 审计日志。
 - **可见性缺口透明**：缺少 auditd、Falco、YARA、bpftool、jcmd 等可选数据源时报告为 `UNAVAILABLE`、`PARTIAL` 或 `NOT_APPLICABLE`，不把“无数据”解释为安全。
 
 ## 适用场景
@@ -76,6 +77,12 @@ Native scanner/cache 使用 C++17。构建需要：
 - nlohmann-json headers
 - GNU Make 或 CMake 3.16+
 
+可复现依赖清单：
+
+- `requirements.txt`：Python 运行时和测试仅使用标准库，不拉取第三方 pip 包。
+- `requirements-native-ubuntu-24.04.txt`：Ubuntu 24.04 源码构建和完整测试的系统包名。
+- [完整依赖说明](docs/DEPENDENCIES.md)：版本基线、安装命令、可选数据源和复现步骤。
+
 Make 构建：
 
 ```bash
@@ -84,6 +91,36 @@ make -C native/secscope-cache -j2
 native/secscope-scanner/scanner capabilities
 native/secscope-scanner/scanner self-test
 ```
+
+## 高危进程隔离与终止
+
+常规扫描不会自动杀进程。处置必须由操作员显式发起，并同时提供扫描生成的 `findings.json`、0600 请求文件和审计日志路径。建议先使用可恢复的 `contain`（`SIGSTOP`），复核后再 `release`（`SIGCONT`）或 `terminate`（`SIGTERM`）；`kill`（`SIGKILL`）还要求 `allow_destructive=true`。
+
+请求中的 `process_instance_id` 必须与 Finding 完全一致，格式为 `process:<boot_id>:<pid>:<start_ticks>:<exe>`。执行前会重新读取 `/proc`，拒绝 PID 1/2、当前进程、祖先进程、PID 重用、启动时钟变化、可执行路径变化、低置信结论、宽松权限文件和符号链接审计目标。支持 pidfd 的内核优先使用 pidfd 发送信号。
+
+```bash
+cat > /secure/secscope/contain-request.json <<'JSON'
+{
+  "schema_version": 1,
+  "action": "contain",
+  "confirmation": "CONTAIN",
+  "process_instance_id": "process:<boot_id>:<pid>:<start_ticks>:/path/to/exe",
+  "finding_id": "<finding-id>",
+  "finding_type": "SECURITY_THREAT",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "reason": "operator-approved incident containment"
+}
+JSON
+chmod 0600 /secure/secscope/contain-request.json
+
+sudo bash secscope.sh \
+  --process-control /secure/secscope/contain-request.json \
+  --findings /secure/secscope/report/findings.json \
+  --audit-log /secure/secscope/process-control.jsonl
+```
+
+动作确认值分别为 `CONTAIN`、`RELEASE`、`TERMINATE` 和 `KILL`。处置命令不会被 systemd 定时扫描自动调用。
 
 CMake 构建：
 
@@ -280,6 +317,7 @@ python3 tests/test_binary_analyzer.py
 python3 tests/test_rat_engine.py
 python3 tests/test_static_analyzer.py
 python3 tests/test_corpus_profile.py
+python3 tests/test_dependency_manifest.py
 bash tests/test_java_agent.sh
 python3 -m py_compile helpers/*.py tests/*.py
 ```
@@ -291,6 +329,7 @@ bash tests/test_native_scanner.sh
 bash tests/test_native_runtime.sh
 bash tests/test_native_cache.sh
 bash tests/test_native_memory_safety.sh
+bash tests/test_process_control.sh
 ```
 
 ## 文档
@@ -307,5 +346,5 @@ bash tests/test_native_memory_safety.sh
 
 - helper 只读字节、Mock 或 JSON 事件，不执行、import、attach、解密执行或加载未知样本。
 - 不抓包，不主动 DNS，不发起 HTTP，不上传文件、哈希、日志、内存或状态。
-- 不杀进程、删文件、修改业务配置或安装 auditd/Falco/YARA/bpftool。
+- 扫描流程不杀进程、删文件、修改业务配置或安装 auditd/Falco/YARA/bpftool；进程处置只在操作员显式提交并通过 Finding、稳定实例和审计门禁时执行。
 - “未发现”仅表示在当前权限、数据源、扫描范围和时间窗口内没有形成规则证据，不代表确认主机绝对安全。

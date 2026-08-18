@@ -10,6 +10,7 @@
 #include "file_monitor.hpp"
 #include "filesystem_facts.hpp"
 #include "events_parser.hpp"
+#include "process_control.hpp"
 
 #include <chrono>
 #include <cerrno>
@@ -203,7 +204,9 @@ int run_hash_files(const secscope::Arguments& args) {
 namespace secscope {
 
 bool is_native_helper_command(const std::string& command) {
-    static const std::set<std::string> commands{"discover-candidates", "parse-web-access", "analyze-binary", "analyze-static", "hash-files", "runtime-snapshot", "file-monitor", "filesystem-facts", "parse-events"};
+    // Keep process control as an explicit helper command; scan/resume never
+    // dispatches into this action path.
+    static const std::set<std::string> commands{"discover-candidates", "parse-web-access", "analyze-binary", "analyze-static", "hash-files", "runtime-snapshot", "file-monitor", "filesystem-facts", "parse-events", "process-control"};
     return commands.count(command) != 0;
 }
 
@@ -218,6 +221,7 @@ int run_native_helper(const std::string& command, int argc, char** argv) {
     if (command == "file-monitor") return run_file_monitor(args);
     if (command == "filesystem-facts") return run_filesystem_facts(args);
     if (command == "parse-events") return run_events_parser(args);
+    if (command == "process-control") return run_process_control(args);
     return 2;
 }
 
