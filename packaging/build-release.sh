@@ -15,10 +15,7 @@ mkdir -p "$DEST" "$ROOT/dist"
 tar --no-xattrs --dereference -C "$ROOT" -cf - \
     --exclude='./dist' --exclude='./prebuilt' --exclude='./runtime' --exclude='./archive' --exclude='./work' --exclude='./reports' \
     --exclude='./.scan-reports' \
-    --exclude='./.git' --exclude='*/__pycache__' --exclude='*.pyc' --exclude='*.o' \
-    --exclude='./native/secscope-scanner/scanner' \
-    --exclude='./native/secscope-cache/cache-daemon' \
-    --exclude='./native/secscope-cache/cache-client' . | tar -C "$DEST" -xf -
+    --exclude='./.git' --exclude='*/__pycache__' --exclude='*.pyc' --exclude='*.o' . | tar -C "$DEST" -xf -
 
 chmod 0755 "$DEST/install.sh" "$DEST/packaging/build-release.sh" "$DEST/secscope.sh"
 find "$DEST/tests" -type f -name '*.sh' -exec chmod 0755 {} +

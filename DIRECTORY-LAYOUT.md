@@ -12,8 +12,7 @@
 - `scripts/`: 本地维护脚本。
 - `modules/`: `secscope.sh` 加载的 Shell 模块。
 - `helpers/`: Python 辅助分析器。
-- `native/`: C++ native scanner/cache 源码。
-- `runtime/`: 捆绑运行时，例如 YARA-X `yr`。
+- `native/`: 纯 Python native scanner/cache（免编译，仅标准库）。
 - `rules/`: 规则和 IOC 数据。
 - `tests/`: 测试集。
 - `docs/`: 设计、审计和测试文档。

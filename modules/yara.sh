@@ -1,278 +1,241 @@
 #!/usr/bin/env bash
-# SecScope bounded YARA capability, scanning, and finding promotion.
+# 差分 YARA：内容扫描只面向"本轮新增/修改"的文件（基线差分驱动）。
+#
+# 设计要点：
+# - 扫描集来自 file-changes.tsv（ADDED/MODIFIED/MOVED），上限 SECSCOPE_YARA_DIFF_MAX_FILES；
+#   未变化的文件永远不重扫——覆盖率对新增面是 100%，代价是每轮秒级。
+# - 规则集默认 YARA Forge full（约 1.2 万条，需 YARA-X 语法）；classic yara 无法编译
+#   yara-x-only 规则，因此只支持 YARA-X `yr`（支持 --scan-list 批量 + ndjson）。
+# - 编译产物按规则内容哈希缓存于 STATE_DIR：规则不变时零编译成本。
+# - 命中通过 record_find 进入统一生命周期/威胁门禁；缺 yr 或规则包时诚实降级为
+#   UNAVAILABLE，绝不把"没扫"解释为"没命中"。
 
-initialize_yara_capability() {
-    local capability="${RAW_DIR}/yara-capability.json" source rule_total=0 capability_status arch runtime_dir bundled_yr
-    YARA_RULE_SOURCES=(); YARA_SCANNER=""; YARA_SCANNER_PATH=""; YARA_SCANNER_VERSION=""; YARA_CAPABILITY_ERROR=""
-    arch=$(uname -m 2>/dev/null || printf unknown)
-    case "$(uname -s 2>/dev/null || printf unknown):$arch" in
-        Linux:x86_64|Linux:amd64) runtime_dir=linux-amd64 ;;
-        Linux:aarch64|Linux:arm64) runtime_dir=linux-arm64 ;;
-        *) runtime_dir="" ;;
-    esac
-    bundled_yr="${PROGRAM_DIR}/runtime/${runtime_dir}/bin/yr"
-    if [ -n "$runtime_dir" ] && [ -x "$bundled_yr" ] && [ ! -L "$bundled_yr" ]; then
-        YARA_SCANNER="yr"; YARA_SCANNER_PATH="$bundled_yr"
-        YARA_SCANNER_VERSION=$(run_with_timeout 3 "$YARA_SCANNER_PATH" --version 2>&1 | head -1); EVENT_SOURCE_YARA="AVAILABLE"
-    elif command -v yr >/dev/null 2>&1; then
-        YARA_SCANNER="yr"; YARA_SCANNER_PATH=$(command -v yr)
-        YARA_SCANNER_VERSION=$(run_with_timeout 3 "$YARA_SCANNER_PATH" --version 2>&1 | head -1); EVENT_SOURCE_YARA="AVAILABLE"
-    elif command -v yara >/dev/null 2>&1; then
-        YARA_SCANNER="yara"; YARA_SCANNER_PATH=$(command -v yara)
-        YARA_SCANNER_VERSION=$(run_with_timeout 3 "$YARA_SCANNER_PATH" --version 2>&1 | head -1); EVENT_SOURCE_YARA="AVAILABLE"
-    else
-        EVENT_SOURCE_YARA="UNAVAILABLE"; YARA_CAPABILITY_ERROR="YARA-X (yr) and classic YARA are not installed"
-    fi
-    if [ -z "$YARA_RULES_PATH" ]; then
-        [ "$EVENT_SOURCE_YARA" = AVAILABLE ] && EVENT_SOURCE_YARA="UNAVAILABLE"
-        YARA_CAPABILITY_ERROR="${YARA_CAPABILITY_ERROR}${YARA_CAPABILITY_ERROR:+; }SECSCOPE_YARA_RULES is not configured"
-    elif [ -f "$YARA_RULES_PATH" ] && [ ! -L "$YARA_RULES_PATH" ] && [ -r "$YARA_RULES_PATH" ]; then
-        YARA_RULE_SOURCES+=("$YARA_RULES_PATH"); rule_total=1
-    elif [ -d "$YARA_RULES_PATH" ] && [ ! -L "$YARA_RULES_PATH" ]; then
-        while IFS= read -r source; do
-            rule_total=$((rule_total + 1))
-            [ "${#YARA_RULE_SOURCES[@]}" -ge "$YARA_MAX_RULE_SOURCES" ] || YARA_RULE_SOURCES+=("$source")
-        done < <(find "$YARA_RULES_PATH" -xdev -maxdepth "$YARA_RULE_MAX_DEPTH" -type f \( -name '*.yar' -o -name '*.yara' \) -print 2>/dev/null | LC_ALL=C sort)
-        if [ "${rule_total:-0}" -gt "$YARA_MAX_RULE_SOURCES" ]; then YARA_CAPABILITY_ERROR="rule directory contains ${rule_total} files; deterministic safety limit selected ${YARA_MAX_RULE_SOURCES}"; fi
-    else
-        EVENT_SOURCE_YARA="UNAVAILABLE"; YARA_CAPABILITY_ERROR="${YARA_CAPABILITY_ERROR}${YARA_CAPABILITY_ERROR:+; }rule path is unreadable, missing, or a symlink"
-    fi
-    if [ "$EVENT_SOURCE_YARA" = AVAILABLE ] && [ "${#YARA_RULE_SOURCES[@]}" -eq 0 ]; then
-        EVENT_SOURCE_YARA="UNAVAILABLE"; YARA_CAPABILITY_ERROR="no readable .yar/.yara rule source"
-    fi
-    {
-        printf '{"status":%s,"mode":%s,"scanner":%s,"version":%s,"rule_path":%s,"rule_source_count":%d,"rule_source_total":%d,"rule_source_limit":%d,"rule_max_depth":%d,"error":%s}\n' \
-            "$(json_quote "$EVENT_SOURCE_YARA")" "$(json_quote "$YARA_MODE")" \
-            "$(json_quote "${YARA_SCANNER:-none}")" "$(json_quote "$YARA_SCANNER_VERSION")" "$(json_quote "$YARA_RULES_PATH")" \
-            "${#YARA_RULE_SOURCES[@]}" "${rule_total:-${#YARA_RULE_SOURCES[@]}}" "$YARA_MAX_RULE_SOURCES" "$YARA_RULE_MAX_DEPTH" "$(json_quote "$YARA_CAPABILITY_ERROR")"
-    } > "$capability"
-    chmod 600 "$capability"
-    capability_status=$([ "$EVENT_SOURCE_YARA" = AVAILABLE ] && { [ -z "$YARA_CAPABILITY_ERROR" ] && printf SUCCESS || printf PARTIAL; } || printf UNAVAILABLE)
-    record_raw_status 'yara-capability.json' "$capability_status" yara "$YARA_CAPABILITY_ERROR"
-    [ "$capability_status" != PARTIAL ] || mark_current_module_partial "yara_rule_source_limit:${YARA_CAPABILITY_ERROR}"
-    [ "$EVENT_SOURCE_YARA" = AVAILABLE ] || mark_current_module_partial "yara_unavailable:${YARA_CAPABILITY_ERROR}"
-}
-scan_yara_candidates() {
-    local candidate_file="${1:-$STATIC_CANDIDATE_FILE}"
-    local out="${RAW_DIR}/yara-results.jsonl" errors="${RAW_DIR}/yara-errors.tsv" path source started scanned=0 rc output status limited="" total_timeout="${STATIC_STAGE_TIMEOUT:-$YARA_TOTAL_TIMEOUT}"
-    local -a yara_x_compiled=()
-    : > "$out"; printf 'path\trule_source\tstatus\texit_code\terror\n' > "$errors"
-    if [ "$EVENT_SOURCE_YARA" != AVAILABLE ]; then
-        local unavailable_status=UNAVAILABLE raw_status=UNAVAILABLE
-        if [ "$EVENT_SOURCE_YARA" = DISABLED ]; then unavailable_status=DISABLED; raw_status=NOT_APPLICABLE; fi
-        printf '{"scanner":%s,"mode":%s,"status":%s,"error":%s}\n' "$(json_quote "${YARA_SCANNER:-none}")" "$(json_quote "$YARA_MODE")" "$(json_quote "$unavailable_status")" "$(json_quote "$YARA_CAPABILITY_ERROR")" > "$out"
-        record_raw_status 'yara-results.jsonl' "$raw_status" yara "$YARA_CAPABILITY_ERROR"
-        record_raw_status 'yara-errors.tsv' "$raw_status" yara "$YARA_CAPABILITY_ERROR"
-        return 0
-    fi
-    started=$SECONDS
-    if [ "$YARA_SCANNER" = yara ]; then
-        local selected="${OUTPUT_DIR}/.yara-selected.${RUN_ID}" output="${OUTPUT_DIR}/.yara.$$.out" remaining
-        : > "$selected"
-        while IFS= read -r path; do
-            [ -f "$path" ] && [ ! -L "$path" ] || continue
-            [ "$(wc -l < "$selected" | tr -d ' ')" -lt "$YARA_MAX_FILES" ] || { limited="max_files"; mark_current_module_partial yara_max_files_reached; break; }
-            [ $((SECONDS - started)) -lt "$total_timeout" ] || { limited="total_timeout"; mark_current_module_partial yara_total_timeout; break; }
-            printf '%s\n' "$path" >> "$selected"
-        done < "$candidate_file"
-        scanned=$(wc -l < "$selected" | tr -d ' ')
-        for source in "${YARA_RULE_SOURCES[@]}"; do
-            remaining=$((total_timeout - (SECONDS - started)))
-            [ "$remaining" -gt 0 ] || { limited="total_timeout"; mark_current_module_partial yara_total_timeout; break; }
-            : > "$output"; rc=0
-            run_with_timeout "$remaining" "$YARA_SCANNER_PATH" -w -e -g -m -a "$remaining" "$source" --scan-list "$selected" > "$output" 2>&1 || rc=$?
-            if [ "$rc" -eq 1 ] && [ ! -s "$output" ]; then rc=0; fi
-            if [ "$rc" -eq 0 ] && [ ! -s "$output" ]; then
-                while IFS= read -r path; do printf '{"scanner":"classic-yara","target":%s,"rule_source":%s,"scan_status":"NO_MATCH","rule":null,"namespace":null,"tags":[],"metadata":{}}\n' "$(json_quote "$path")" "$(json_quote "$source")" >> "$out"; done < "$selected"
-            elif [ "$rc" -eq 0 ] && command -v python3 >/dev/null 2>&1 && [ -r "${PROGRAM_DIR}/helpers/yara_normalizer.py" ]; then
-                python3 "${PROGRAM_DIR}/helpers/yara_normalizer.py" --input "$output" --targets-file "$selected" --rule-source "$source" >> "$out" 2>> "$errors" || rc=$?
-            else
-                printf '%s\t%s\t%s\t%s\t%s\n' "$selected" "$source" "$([ "$rc" -eq 124 ] && printf TIMEOUT || printf ERROR)" "$rc" "$(tr '\t\n' '  ' < "$output" | head -c 1000)" >> "$errors"
-            fi
-            rm -f "$output"
-        done
-        rm -f "$selected"
-        printf '{"scanner":%s,"mode":%s,"scan_status":"SUMMARY","scanned_files":%d,"max_files":%s,"total_timeout_seconds":%s,"elapsed_seconds":%d,"batch_mode":true}\n' \
-            "$(json_quote "$YARA_SCANNER")" "$(json_quote "$YARA_MODE")" "$scanned" "$YARA_MAX_FILES" "$total_timeout" "$((SECONDS - started))" >> "$out"
-        [ -z "$limited" ] && record_raw_status 'yara-results.jsonl' SUCCESS yara '' || record_raw_status 'yara-results.jsonl' PARTIAL yara "$limited"
-        [ "$(wc -l < "$errors")" -gt 1 ] && record_raw_status 'yara-errors.tsv' PARTIAL yara 'per-batch errors present' || record_raw_status 'yara-errors.tsv' NO_RESULTS yara ''
-        return 0
-    fi
-    if [ "$YARA_SCANNER" = yr ]; then
-        local compile_index=0 compiled compile_log remaining
-        for source in "${YARA_RULE_SOURCES[@]}"; do
-            remaining=$((total_timeout - (SECONDS - started)))
-            [ "$remaining" -gt 0 ] || { limited="total_timeout"; mark_current_module_partial yara_total_timeout; break; }
-            compiled="${OUTPUT_DIR}/.yara-compiled.${RUN_ID}.${compile_index}.yarc"
-            compile_log="${OUTPUT_DIR}/.yara-compile.${RUN_ID}.${compile_index}.log"
-            rc=0
-            run_with_timeout "$remaining" "$YARA_SCANNER_PATH" compile -w -o "$compiled" "$source" > "$compile_log" 2>&1 || rc=$?
-            if [ "$rc" -ne 0 ] || [ ! -s "$compiled" ]; then
-                status=ERROR; [ "$rc" -eq 124 ] && status=TIMEOUT
-                printf '%s\t%s\t%s\t%s\t%s\n' '<compile>' "$source" "$status" "$rc" "$(tr '\t\n' '  ' < "$compile_log" | head -c 1000)" >> "$errors"
-                rm -f "$compiled" "$compile_log"
-                mark_current_module_partial yara_rule_compile_failed
-                yara_x_compiled+=("")
-            else
-                rm -f "$compile_log"
-                yara_x_compiled+=("$compiled")
-            fi
-            compile_index=$((compile_index + 1))
-        done
-    fi
-    while IFS= read -r path; do
-        [ -f "$path" ] && [ ! -L "$path" ] || continue
-        [ "$scanned" -lt "$YARA_MAX_FILES" ] || { limited="max_files"; mark_current_module_partial yara_max_files_reached; break; }
-        [ $((SECONDS - started)) -lt "$total_timeout" ] || { limited="total_timeout"; mark_current_module_partial yara_total_timeout; break; }
-        local source_index=0
-        for source in "${YARA_RULE_SOURCES[@]}"; do
-            if [ $((SECONDS - started)) -ge "$total_timeout" ]; then limited="total_timeout"; mark_current_module_partial yara_total_timeout; break; fi
-            output="${OUTPUT_DIR}/.yara.$$.out"; : > "$output"; rc=0
-            if [ "$YARA_SCANNER" = yr ]; then
-                compiled="${yara_x_compiled[$source_index]:-}"
-                if [ -z "$compiled" ]; then rc=126; printf 'compiled rule unavailable' > "$output"
-                else run_with_timeout "$YARA_FILE_TIMEOUT" "$YARA_SCANNER_PATH" scan -C --output-format=ndjson -m -g -e "$compiled" "$path" > "$output" 2>&1 || rc=$?
-                fi
-            else
-                run_with_timeout "$YARA_FILE_TIMEOUT" "$YARA_SCANNER_PATH" -w -e -g -m -a "$YARA_FILE_TIMEOUT" "$source" "$path" > "$output" 2>&1 || rc=$?
-            fi
-            # classic YARA uses exit 1 for a clean no-match result. Errors with
-            # diagnostics remain errors and are preserved below.
-            if [ "$YARA_SCANNER" = yara ] && [ "$rc" -eq 1 ] && [ ! -s "$output" ]; then rc=0; fi
-            status=SUCCESS; [ "$rc" -eq 0 ] || status=ERROR; [ "$rc" -eq 124 ] && status=TIMEOUT; [ "$rc" -eq 125 ] && status=UNAVAILABLE_TIMEOUT_WRAPPER
-            if [ "$rc" -eq 0 ] && [ ! -s "$output" ]; then
-                printf '{"scanner":%s,"target":%s,"rule_source":%s,"scan_status":"NO_MATCH","rule":null,"namespace":null,"tags":[],"metadata":{}}\n' \
-                    "$(json_quote "$YARA_SCANNER")" "$(json_quote "$path")" "$(json_quote "$source")" >> "$out"
-            elif [ "$YARA_SCANNER" = yr ] && [ "$rc" -eq 0 ]; then
-                # YARA-X already emits rule identifier, namespace, tags and metadata.
-                while IFS= read -r line; do printf '{"scanner":"yara-x","target":%s,"rule_source":%s,"scan_status":"%s","result":%s}\n' "$(json_quote "$path")" "$(json_quote "$source")" "$status" "$line" >> "$out"; done < "$output"
-            elif [ "$rc" -eq 0 ] && command -v python3 >/dev/null 2>&1 && [ -r "${PROGRAM_DIR}/helpers/yara_normalizer.py" ]; then
-                python3 "${PROGRAM_DIR}/helpers/yara_normalizer.py" --input "$output" --target "$path" --rule-source "$source" >> "$out" 2>> "$errors" || rc=$?
-            else
-                # Preserve raw output and an explicit parse gap if the optional
-                # normalizer is unavailable; never interpret this as a clean scan.
-                printf '{"scanner":"classic-yara","target":%s,"rule_source":%s,"scan_status":"%s","exit_code":%d,"rule":null,"namespace":null,"tags":[],"metadata":{},"parse_status":"UNAVAILABLE","raw_output":%s}\n' \
-                    "$(json_quote "$path")" "$(json_quote "$source")" "$status" "$rc" "$(json_quote "$(head -c 65536 "$output")")" >> "$out"
-            fi
-            [ "$rc" -eq 0 ] || printf '%s\t%s\t%s\t%s\t%s\n' "$path" "$source" "$status" "$rc" "$(tr '\t\n' '  ' < "$output" | head -c 1000)" >> "$errors"
-            rm -f "$output"
-            source_index=$((source_index + 1))
-        done
-        [ "$limited" = total_timeout ] && break
-        scanned=$((scanned + 1))
-    done < "$candidate_file"
-    for compiled in "${yara_x_compiled[@]}"; do [ -z "$compiled" ] || rm -f "$compiled"; done
-    printf '{"scanner":%s,"mode":%s,"scan_status":"SUMMARY","scanned_files":%d,"max_files":%s,"total_timeout_seconds":%s,"elapsed_seconds":%d}\n' \
-        "$(json_quote "$YARA_SCANNER")" "$(json_quote "$YARA_MODE")" "$scanned" "$YARA_MAX_FILES" "$total_timeout" "$((SECONDS - started))" >> "$out"
-    [ -z "$limited" ] && record_raw_status 'yara-results.jsonl' SUCCESS yara '' || record_raw_status 'yara-results.jsonl' PARTIAL yara "$limited"
-    [ "$(wc -l < "$errors")" -gt 1 ] && record_raw_status 'yara-errors.tsv' PARTIAL yara 'per-file/rule errors present' || record_raw_status 'yara-errors.tsv' NO_RESULTS yara ''
+# 路径在 run_diff_yara 内绑定：本模块在脚本 source 阶段加载，彼时 RAW_DIR 尚未
+# 建立（每轮新建），顶层绑定会指向空路径。
+YARA_DIFF_MAX_FILES="${SECSCOPE_YARA_DIFF_MAX_FILES:-2000}"
+YARA_DIFF_TIMEOUT="${SECSCOPE_YARA_TOTAL_TIMEOUT:-120}"
+YARA_DIFF_YR="${SECSCOPE_YR_PATH:-}"
+YARA_DIFF_COMPILE_TIMEOUT="${SECSCOPE_YARA_COMPILE_TIMEOUT:-600}"
+YARA_DIFF_RULES="${SECSCOPE_YARA_RULES:-}"
+
+YARA_DIFF_STATUS="NOT_RUN"
+YARA_DIFF_SCANNED=0
+YARA_DIFF_MATCHED=0
+YARA_DIFF_RULES_SHA=""
+YARA_DIFF_INPUT="" YARA_DIFF_RESULTS="" YARA_DIFF_SUMMARY=""
+
+yara_diff_init_paths() {
+    YARA_DIFF_INPUT="${RAW_DIR}/yara-diff-input.txt"
+    YARA_DIFF_RESULTS="${RAW_DIR}/yara-diff-results.jsonl"
+    YARA_DIFF_SUMMARY="${RAW_DIR}/yara-diff-summary.json"
+    [ -n "$YARA_DIFF_RULES" ] || YARA_DIFF_RULES="${PROGRAM_DIR}/rules/yara-forge/yara-rules-full.yar"
 }
 
-promote_yara_findings() {
-    local out="${RAW_DIR}/yara-findings.tsv" summary="${RAW_DIR}/yara-summary.json" rc=0
-    local target rule namespace severity confidence category family mitre description tags metadata_json sha md5 package action priority_score priority_reasons web_root web_access process_context network_context persistence_context container_context kubernetes_context domains requested_type promotion_reason
-    YARA_SCANNED=0; YARA_MATCHED=0; YARA_TIMEOUT_COUNT=0; YARA_ERROR_COUNT=0; YARA_PROMOTED_FINDINGS=0
-    local expected_files=0
-    [ -r "${RAW_DIR}/static-coverage.jsonl" ] && expected_files=$(python3 - "${RAW_DIR}/static-coverage.jsonl" <<'PY'
+yara_diff_find_yr() {
+    if [ -n "$YARA_DIFF_YR" ]; then
+        [ -x "$YARA_DIFF_YR" ] && { printf '%s' "$YARA_DIFF_YR"; return 0; }
+        return 1
+    fi
+    local candidate
+    for candidate in "${PROGRAM_DIR}/runtime/linux-amd64/bin/yr" \
+                     "${PROGRAM_DIR}/runtime/linux-arm64/bin/yr" \
+                     "$(command -v yr 2>/dev/null)"; do
+        [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+        YARA_DIFF_YR="$candidate"
+        printf '%s' "$candidate"
+        return 0
+    done
+    return 1
+}
+
+yara_diff_rule_fingerprint() {
+    sha256_file "$YARA_DIFF_RULES" 2>/dev/null || true
+}
+
+# 从本轮 file-changes.tsv 提取新增/修改/移动的路径，去重、排除自身产物、限量。
+yara_diff_build_list() {
+    [ -s "${RAW_DIR}/file-changes.tsv" ] || return 1
+    local count
+    count=$(awk -F '\t' 'NR>0 && ($1=="ADDED"||$1=="MODIFIED"||$1=="MOVED") && $2!="" {print $2}' \
+        "${RAW_DIR}/file-changes.tsv" 2>/dev/null \
+        | grep -v -F -e "${PROGRAM_DIR}/" -e "${OUTPUT_DIR:-/__none__}/" -e "${STATE_DIR:-/__none__}/" \
+        | awk '!seen[$0]++' | head -n "$YARA_DIFF_MAX_FILES" \
+        | LC_ALL=C sort -u | head -n "$YARA_DIFF_MAX_FILES")
+    [ -n "$count" ] || return 1
+    printf '%s\n' "$count" > "$YARA_DIFF_INPUT"
+    return 0
+}
+
+yara_diff_compile_rules() {
+    local fingerprint="$1" compiled="${STATE_DIR}/yara-rules.yarac" meta="${STATE_DIR}/yara-rules.meta"
+    [ -d "${STATE_DIR:-}" ] || return 1
+    if [ -s "$compiled" ] && [ -s "$meta" ] && [ "$(cat "$meta" 2>/dev/null)" = "$fingerprint" ]; then
+        printf '%s' "$compiled"
+        return 0
+    fi
+    local tmp="${compiled}.next.$$"
+    if ! run_with_timeout "$YARA_DIFF_COMPILE_TIMEOUT" "$YARA_DIFF_YR" compile -w -o "$tmp" "$YARA_DIFF_RULES" >>"${RAW_DIR}/yara-diff-compile.log" 2>&1; then
+        rm -f "$tmp"
+        return 1
+    fi
+    mv "$tmp" "$compiled"
+    printf '%s' "$fingerprint" > "$meta"
+    chmod 600 "$compiled" "$meta" 2>/dev/null || true
+    printf '%s' "$compiled"
+}
+
+yara_diff_parse_and_report() {
+    # 输入：ndjson 命中流；每条命中生成一个 finding。规则名作为 rule_id 后缀，
+    # 走 FILE+INTEGRITY+MALWARE_ENGINE 三证据域，威胁门禁自然放行 SECURITY_THREAT。
+    python3 - "$1" "${RAW_DIR}/file-changes.tsv" >> "$YARA_DIFF_RESULTS" <<'PY'
 import json, sys
-total = 0
+
+def redact(text, limit=800):
+    return (text or "")[:limit]
+
+changes_by_path = {}
+with open(sys.argv[2], encoding="utf-8", errors="replace") as handle:
+    for line in handle:
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) >= 6 and fields[1]:
+            changes_by_path.setdefault(fields[1], fields[0])
+
 for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    line = line.strip()
+    if not line:
+        continue
     try:
-        item = json.loads(line)
+        record = json.loads(line)
     except ValueError:
         continue
-    if not item.get("summary"):
-        total += int(item.get("expected_files", item.get("selected", 0)) or 0)
-print(total)
+    path = record.get("path") or record.get("target") or ""
+    for match in record.get("matching_rules", []) or []:
+        rule = str(match.get("identifier") or match.get("rule") or "UNKNOWN").replace("|", "_")[:120]
+        namespace = str(match.get("namespace") or "default")[:120]
+        tags = ",".join(str(t) for t in (match.get("tags") or []))[:200]
+        meta = match.get("metadata") or match.get("meta") or {}
+        meta_items = []
+        if isinstance(meta, dict):
+            for key in ("severity", "confidence", "category", "family", "description", "author", "reference"):
+                value = meta.get(key)
+                if value:
+                    text = value.get("value") if isinstance(value, dict) else value
+                    meta_items.append(f"{key}={str(text)[:160]}")
+        meta_text = "; ".join(meta_items)
+        severity = "MEDIUM"
+        confidence = "MEDIUM"
+        lowered = meta_text.lower()
+        if "severity=critical" in lowered:
+            severity = "CRITICAL"
+        elif "severity=high" in lowered:
+            severity = "HIGH"
+        if "confidence=high" in lowered:
+            confidence = "HIGH"
+        requested_type = "SECURITY_THREAT" if severity in ("CRITICAL", "HIGH") else "SECURITY_ANOMALY"
+        action = changes_by_path.get(path, "UNKNOWN")
+        summary = f"差分 YARA 命中: {path} (rule={rule}, action={action})"
+        evidence = (f"rule={namespace}:{rule}; tags={tags or 'none'}; meta={meta_text or 'none'}; "
+                    f"action={action}; scanner=yara-x-diff; match_file={path}")
+        print(json.dumps({
+            "rule_id": f"YARA-DIFF-{rule}",
+            "path": path,
+            "severity": severity,
+            "confidence": confidence,
+            "requested_type": requested_type,
+            "summary": summary,
+            "evidence": evidence,
+        }, ensure_ascii=False))
 PY
-    )
-    YARA_RULES_LOADED=${#YARA_RULE_SOURCES[@]}
-    if [ "$PROFILE_YARA_ENABLED" != true ] || [ "$EVENT_SOURCE_YARA" = DISABLED ]; then
-        printf '%s\n' $'target\trule\tnamespace\tseverity\tconfidence\tcategory\tfamily\tmitre\tdescription\ttags\tmetadata_json\tsha256\tmd5\tpackage_owner\tfile_action\tpriority_score\tpriority_reasons\tweb_root\tweb_access\tprocess_context\tnetwork_context\tpersistence_context\tcontainer_context\tkubernetes_context\tevidence_domains\trequested_finding_type\tpromotion_reason' > "$out"
-        printf '{"mode":%s,"status":"DISABLED","scanned":0,"matched":0,"timeout":0,"error":0,"promoted_findings":0,"rules_loaded":0}\n' "$(json_quote "$YARA_MODE")" > "$summary"
-        record_raw_status 'yara-findings.tsv' NOT_APPLICABLE yara "mode=${YARA_MODE}"
-        record_raw_status 'yara-summary.json' NOT_APPLICABLE yara "mode=${YARA_MODE}"
+}
+
+run_diff_yara() {
+    yara_diff_init_paths
+    YARA_DIFF_STATUS="UNAVAILABLE"; YARA_DIFF_SCANNED=0; YARA_DIFF_MATCHED=0; YARA_DIFF_RULES_SHA=""
+    : > "$YARA_DIFF_RESULTS"; : > "$YARA_DIFF_SUMMARY"
+    if [ ! -s "$YARA_DIFF_RULES" ] || [ -L "$YARA_DIFF_RULES" ]; then
+        record_raw_status 'yara-diff-summary.json' NOT_APPLICABLE yara "rules_missing:${YARA_DIFF_RULES}"
         return 0
     fi
-    if ! command -v python3 >/dev/null 2>&1 || [ ! -r "$YARA_PROMOTER_PATH" ]; then
-        : > "$out"
-        printf '{"mode":%s,"status":"UNAVAILABLE","scanned":0,"matched":0,"timeout":0,"error":1,"promoted_findings":0,"rules_loaded":%s,"reason":"python3_or_yara_promoter_missing"}\n' "$(json_quote "$YARA_MODE")" "$YARA_RULES_LOADED" > "$summary"
-        YARA_ERROR_COUNT=1
-        record_raw_status 'yara-findings.tsv' UNAVAILABLE yara 'python3 or yara promoter missing'
-        record_raw_status 'yara-summary.json' UNAVAILABLE yara 'python3 or yara promoter missing'
-        mark_current_module_partial yara_promotion_unavailable
+    YARA_DIFF_RULES_SHA=$(yara_diff_rule_fingerprint)
+    if ! yara_diff_find_yr; then
+        record_raw_status 'yara-diff-summary.json' NOT_APPLICABLE yara 'yr_not_available'
         return 0
     fi
-    run_with_timeout 120 python3 "$YARA_PROMOTER_PATH" --input "${RAW_DIR}/yara-results.jsonl" --raw-dir "$RAW_DIR" \
-        --output "$out" --summary "$summary" --mode "$YARA_MODE" --rules-loaded "$YARA_RULES_LOADED" \
-        --max-hash-bytes "$FILE_MAX_HASH_BYTES" > "${RAW_DIR}/yara-promoter.log" 2>&1 || rc=$?
-    chmod 600 "$out" "$summary" "${RAW_DIR}/yara-promoter.log" 2>/dev/null || true
-    if [ "$rc" -ne 0 ]; then
-        YARA_ERROR_COUNT=1
-        record_raw_status 'yara-findings.tsv' PARTIAL yara "promoter_exit_${rc}"
-        record_raw_status 'yara-summary.json' PARTIAL yara "promoter_exit_${rc}"
-        mark_current_module_partial "yara_promoter_exit_${rc}"
+    if ! "$YARA_DIFF_YR" scan --help 2>&1 | grep -q -- '--scan-list'; then
+        record_raw_status 'yara-diff-summary.json' NOT_APPLICABLE yara 'yr_missing_scan_list'
         return 0
     fi
-    IFS=$'\t' read -r YARA_SCANNED YARA_MATCHED YARA_TIMEOUT_COUNT YARA_ERROR_COUNT YARA_PROMOTED_FINDINGS YARA_RULES_LOADED < <(
-        python3 - "$summary" <<'PY'
-import json,sys
-d=json.load(open(sys.argv[1],encoding='utf-8'))
-print('\t'.join(str(d.get(k,0)) for k in ('scanned','matched','timeout','error','promoted_findings','rules_loaded')))
-PY
-    )
-    local yara_tsv_errors=0 yara_tsv_timeouts=0
-    if [ -r "${RAW_DIR}/yara-errors.tsv" ]; then
-        yara_tsv_errors=$(awk -F '\t' 'NR>1 && $3!="TIMEOUT" {n++} END {print n+0}' "${RAW_DIR}/yara-errors.tsv")
-        yara_tsv_timeouts=$(awk -F '\t' 'NR>1 && $3=="TIMEOUT" {n++} END {print n+0}' "${RAW_DIR}/yara-errors.tsv")
-        [ "$YARA_ERROR_COUNT" -ge "$yara_tsv_errors" ] || YARA_ERROR_COUNT="$yara_tsv_errors"
-        [ "$YARA_TIMEOUT_COUNT" -ge "$yara_tsv_timeouts" ] || YARA_TIMEOUT_COUNT="$yara_tsv_timeouts"
+    if ! yara_diff_build_list; then
+        YARA_DIFF_STATUS="SUCCESS"
+        printf '{"status":"SUCCESS","scanned_files":0,"matched":0,"reason":"no_changes_this_round"}\n' > "$YARA_DIFF_SUMMARY"
+        record_raw_status 'yara-diff-input.txt' NO_RESULTS yara ''
+        record_raw_status 'yara-diff-results.jsonl' NO_RESULTS yara ''
+        record_raw_status 'yara-diff-summary.json' SUCCESS yara 'no_changes'
+        return 0
     fi
-    if [ "${expected_files:-0}" -gt 0 ] && [ "$YARA_SCANNED" -lt "$expected_files" ]; then
-        YARA_ERROR_COUNT=$((YARA_ERROR_COUNT + expected_files - YARA_SCANNED))
-        mark_current_module_partial "yara_incomplete_expected_${expected_files}_scanned_${YARA_SCANNED}"
-        python3 - "$summary" "$expected_files" "$YARA_SCANNED" <<'PY'
+    YARA_DIFF_SCANNED=$(wc -l < "$YARA_DIFF_INPUT" | tr -d ' ')
+    local compiled rc=0
+    compiled=$(yara_diff_compile_rules "$YARA_DIFF_RULES_SHA") || {
+        YARA_DIFF_STATUS="PARTIAL"
+        printf '{"status":"PARTIAL","scanned_files":%s,"matched":0,"error":"compile_failed"}\n' "$YARA_DIFF_SCANNED" > "$YARA_DIFF_SUMMARY"
+        mark_current_module_partial yara_diff_compile_failed
+        record_raw_status 'yara-diff-summary.json' PARTIAL yara 'compile_failed'
+        return 0
+    }
+    run_with_timeout "$YARA_DIFF_TIMEOUT" "$YARA_DIFF_YR" scan -C --output-format=ndjson -m -g -e --scan-list \
+        "$compiled" "$YARA_DIFF_INPUT" > "${RAW_DIR}/yara-diff-scan.ndjson" 2> "${RAW_DIR}/yara-diff-scan.error" || rc=$?
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+        YARA_DIFF_STATUS="PARTIAL"
+        printf '{"status":"PARTIAL","scanned_files":%s,"matched":0,"error":"scan_exit_%s"}\n' "$YARA_DIFF_SCANNED" "$rc" > "$YARA_DIFF_SUMMARY"
+        mark_current_module_partial "yara_diff_scan_exit_${rc}"
+        record_raw_status 'yara-diff-summary.json' PARTIAL yara "scan_exit=${rc}"
+        return 0
+    fi
+    local parse_rc=0
+    yara_diff_parse_and_report "${RAW_DIR}/yara-diff-scan.ndjson" || parse_rc=$?
+    if [ "$parse_rc" -ne 0 ]; then
+        YARA_DIFF_STATUS="PARTIAL"
+        printf '{"status":"PARTIAL","scanned_files":%s,"matched":0,"error":"parse_failed"}\n' "$YARA_DIFF_SCANNED" > "$YARA_DIFF_SUMMARY"
+        mark_current_module_partial yara_diff_parse_failed
+        record_raw_status 'yara-diff-summary.json' PARTIAL yara 'parse_failed'
+        return 0
+    fi
+    # grep -c 在计数为 0 时退出码非零但仍输出 0；不能接 || printf 0，
+    # 否则命令替换会捕获到两行，把 summary/status 的 JSON 撑破。
+    YARA_DIFF_MATCHED=$(grep -c '"rule_id"' "$YARA_DIFF_RESULTS" 2>/dev/null)
+    [ -n "$YARA_DIFF_MATCHED" ] || YARA_DIFF_MATCHED=0
+    YARA_DIFF_STATUS="SUCCESS"
+    [ "$rc" -ne 0 ] && YARA_DIFF_STATUS="PARTIAL" && mark_current_module_partial yara_diff_scan_timeout
+    printf '{"status":"%s","scanned_files":%s,"matched":%s,"rules_sha256":"%s","max_files":%s,"timeout_seconds":%s}\n' \
+        "$YARA_DIFF_STATUS" "$YARA_DIFF_SCANNED" "$YARA_DIFF_MATCHED" "$YARA_DIFF_RULES_SHA" "$YARA_DIFF_MAX_FILES" "$YARA_DIFF_TIMEOUT" > "$YARA_DIFF_SUMMARY"
+    record_raw_status 'yara-diff-input.txt' SUCCESS yara "diff_changed_files=${YARA_DIFF_SCANNED}"
+    record_raw_status 'yara-diff-results.jsonl' "$([ "$YARA_DIFF_MATCHED" -gt 0 ] && printf SUCCESS || printf NO_RESULTS)" yara "matched=${YARA_DIFF_MATCHED}"
+    record_raw_status 'yara-diff-summary.json' "$YARA_DIFF_STATUS" yara "matched=${YARA_DIFF_MATCHED}"
+    [ ! -s "${RAW_DIR}/yara-diff-scan.error" ] || record_raw_status 'yara-diff-scan.error' PARTIAL yara 'scanner_stderr'
+
+    if [ "$YARA_DIFF_MATCHED" -gt 0 ]; then
+        while IFS=$'\t' read -r severity confidence rule_id path summary evidence requested_type; do
+            [ -n "$rule_id" ] || continue
+            record_find "$severity" webshell "$summary" "$evidence" \
+                '核对规则意图、文件来源与哈希；结合基线新增时间、进程执行和网络行为综合研判' 'T1204.002' \
+                "$rule_id" "$path" 'yara-diff-results.jsonl,file-changes.tsv,file-inventory-current.tsv' \
+                "${requested_type:-SECURITY_ANOMALY}" "$confidence" \
+                'YARA 规则命中仅表示特征匹配，不等于确认入侵；全量规则集存在本底误报' \
+                '若文件为基线新增/修改、伴随执行或外连，或规则为高置信家族特征，应升级' 'FILE,INTEGRITY,MALWARE_ENGINE' \
+                "反证：包归属与白名单核查见 record_find；维护窗口=${MAINTENANCE_ACTIVE}" \
+                "$RUN_STARTED_AT|FILE|yara-diff rule=$rule_id"
+        done < <(python3 - "$YARA_DIFF_RESULTS" <<'PY'
 import json, sys
-path, expected, scanned = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-data = json.load(open(path, encoding="utf-8"))
-data.update({"expected_files": expected, "scanned_files": scanned, "status": "PARTIAL",
-             "skip_reasons": sorted(set(data.get("skip_reasons", []) + ["candidate_budget_or_error"]))})
-open(path, "w", encoding="utf-8").write(json.dumps(data, sort_keys=True) + "\n")
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try:
+        row = json.loads(line)
+    except ValueError:
+        continue
+    print("\t".join((row.get("severity",""), row.get("confidence",""), row.get("rule_id",""),
+                     row.get("path",""), row.get("summary",""), row.get("evidence",""),
+                     row.get("requested_type",""))))
 PY
+)
     fi
-    while IFS=$'\037' read -r target rule namespace severity confidence category family mitre description tags metadata_json sha md5 package action priority_score priority_reasons web_root web_access process_context network_context persistence_context container_context kubernetes_context domains requested_type promotion_reason; do
-        [ "$target" = target ] && continue
-        [ -n "$target$rule" ] || continue
-        local finding_category=filesystem safe_rule evidence judgment escalation counter timeline
-        case "$(printf '%s' "$category" | tr '[:upper:]' '[:lower:]')" in *webshell*|*web_shell*) finding_category=webshell ;; esac
-        safe_rule=$(printf '%s' "${namespace}:${rule}" | LC_ALL=C tr -c 'A-Za-z0-9_.:-' '_' | cut -c1-180)
-        evidence="YARA rule=${namespace}:${rule}; mode=${YARA_MODE}; category=${category}; family=${family}; description=${description}; tags=${tags}; metadata=${metadata_json}; target=${target}; SHA256=${sha}; MD5=${md5}; package_owner=${package}; file_action=${action}; priority_score=${priority_score}; priority_reasons=${priority_reasons}; web_root=${web_root:-none}; web_access=${web_access:-none}; process=${process_context:-none}; network=${network_context:-none}; persistence=${persistence_context:-none}; container=${container_context:-none}; kubernetes=${kubernetes_context:-none}"
-        judgment="YARA 规则 meta 映射为 severity=${severity}, confidence=${confidence}；${promotion_reason}；行为上下文只在存在稳定实体或明确路径映射时关联"
-        escalation='核对规则来源与误报说明；若同文件关联新增/修改、Web 请求、运行进程、异常网络或持久化，应提高处置优先级'
-        counter="package_owner=${package:-unowned}; maintenance_window=${MAINTENANCE_ACTIVE}; rule_metadata=${metadata_json}"
-        timeline="$RUN_STARTED_AT|FILE|YARA ${namespace}:${rule} matched ${target}"
-        [ -z "$web_access" ] || timeline="${timeline};$RUN_STARTED_AT|WEB|${web_access}"
-        [ -z "$process_context" ] || timeline="${timeline};$RUN_STARTED_AT|PROCESS|${process_context}"
-        [ -z "$network_context" ] || timeline="${timeline};$RUN_STARTED_AT|NETWORK|${network_context}"
-        [ -z "$persistence_context" ] || timeline="${timeline};$RUN_STARTED_AT|PERSISTENCE|${persistence_context}"
-        record_find "$severity" "$finding_category" "YARA 命中: ${rule} -> ${target}" "$evidence" \
-            '保全命中文件、规则版本和关联上下文，结合发布记录与行为证据复核；SecScope 不自动处置文件' "$mitre" \
-            "YARA-MALICIOUS-HIT:${safe_rule}" "$target" 'yara-results.jsonl,yara-findings.tsv,yara-summary.json,file-changes.tsv,process-context.tsv,abnormal-connections.tsv,web-access-normalized.tsv,container-context.tsv,kubernetes-context.tsv' \
-            "$requested_type" "$confidence" "$judgment" "$escalation" "$domains" "$counter" "$timeline"
-    done < <(tr '\t' '\037' < "$out")
-    [ "$YARA_MATCHED" -gt 0 ] && record_raw_status 'yara-findings.tsv' SUCCESS yara '' || record_raw_status 'yara-findings.tsv' NO_RESULTS yara ''
-    if [ "$YARA_ERROR_COUNT" -gt 0 ] || [ "$YARA_TIMEOUT_COUNT" -gt 0 ]; then
-        EVENT_SOURCE_YARA=PARTIAL
-        python3 - "$summary" "$YARA_ERROR_COUNT" "$YARA_TIMEOUT_COUNT" <<'PY'
-import json, sys
-path, errors, timeouts = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-data = json.load(open(path, encoding="utf-8"))
-data.update({"status": "PARTIAL", "error": errors, "timeout": timeouts})
-open(path, "w", encoding="utf-8").write(json.dumps(data, sort_keys=True) + "\n")
-PY
-        record_raw_status 'yara-summary.json' PARTIAL yara 'scan timeout/error present'
-        mark_current_module_partial "yara_scan_incomplete_errors_${YARA_ERROR_COUNT}_timeouts_${YARA_TIMEOUT_COUNT}"
-    else
-        record_raw_status 'yara-summary.json' SUCCESS yara ''
-    fi
+    return 0
 }

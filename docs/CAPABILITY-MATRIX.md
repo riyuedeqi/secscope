@@ -5,7 +5,6 @@
 | 能力 | Linux v1.0 | Windows v1.0 | 真实实现、可选依赖与边界 |
 | --- | --- | --- | --- |
 | WebShell 多语言静态结构 | 支持 | 支持 | PHP/JSP/Java/.NET/Node/Python 共享有界解码、能力组合、数据流边和安全归档。当前是启发式 token/bytecode/IL 特征，不是每种语言的完整 AST/CFG。 |
-| YARA-X / classic YARA | 支持（可选） | 支持（可选） | Linux 优先 `yr`、回退 `yara`，支持分层模式、有界本地规则、meta 风险映射、finding 提升和文件/Web/进程/网络/持久化/容器上下文关联；扫描器或规则不存在时为 `UNAVAILABLE`。 |
 | PE 结构分析 | 支持 | 支持 | 共享原始字节解析 Header、Section/熵、Import/Export、Resource/Overlay、编译时间和 API 组合。Windows 额外读 Authenticode/Publisher/VersionInfo；绝不 `Assembly.Load`。 |
 | ELF 结构分析 | 支持 | 支持（文件输入） | 解析 ELF Header/Section/Dynamic/Symbol 与字符串；不执行或动态链接目标。 |
 | 高风险 API 组合 | 支持 | 支持 | 只对 OpenProcess+VirtualAllocEx+WriteProcessMemory+RemoteThread 等组合赋能；单个 `socket/cmd/powershell/connect`、高熵或无签名不定性。Import/字符串仍只是静态能力证据，不证明已执行。 |

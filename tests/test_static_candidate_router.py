@@ -36,25 +36,21 @@ def main():
         candidates.write_text("\n".join(str(item) for item in (php, hidden, utf16, elf, pe, unknown, link)) + "\n", encoding="utf-8")
         web = base / "web.txt"
         binary = base / "binary.txt"
-        yara = base / "yara.txt"
         summary = base / "summary.json"
         completed = subprocess.run([
             sys.executable, str(ROUTER), "--input-list", str(candidates),
             "--web-output", str(web), "--binary-output", str(binary),
-            "--yara-output", str(yara), "--summary", str(summary),
+            "--summary", str(summary),
             "--max-probe-bytes", "4096",
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         assert completed.returncode == 2, completed.stderr
         assert read_lines(web) == {str(php), str(hidden), str(utf16)}
         assert read_lines(binary) == {str(elf), str(pe)}
-        assert read_lines(yara) == {str(php), str(hidden), str(utf16), str(elf), str(pe), str(unknown)}
         document = json.loads(summary.read_text(encoding="utf-8"))
         assert document["status"] == "PARTIAL"
         assert document["input_candidates"] == 7
-        assert document["readable_candidates"] == 6
         assert document["web_candidates"] == 3
         assert document["binary_candidates"] == 2
-        assert document["yara_candidates"] == 6
         assert document["unreadable_or_unstable"] == 1
     print("STATIC_CANDIDATE_ROUTER_OK")
 

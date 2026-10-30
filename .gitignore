@@ -13,14 +13,13 @@ venv/
 
 # Build outputs
 *.o
-*.so
 *.a
 *.dylib
 *.dll
 *.exe
-native/secscope-scanner/scanner
-native/secscope-cache/cache-daemon
-native/secscope-cache/cache-client
+# v2.x 起 native 组件为纯 Python：scanner/cache-daemon/cache-client 是必需的
+# 启动器脚本（shebang + python3），必须随仓库分发，不再忽略。
+# 若本地存在旧 C++ 构建产物，仍按以下通配排除：
 native/**/build/
 native/**/CMakeFiles/
 native/**/CMakeCache.txt

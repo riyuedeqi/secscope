@@ -1,0 +1,1926 @@
+{
+  "schema_version": 1,
+  "pack": {
+    "name": "secscope-core",
+    "version": "2026.10.30",
+    "description": "SecScope unified malware signature pack. Behavioral + structural indicators only; no sample-exact hashes (anti-overfitting). Org hash IOC feeds go to file-scan.config MaliciousHashes or rules/ioc-local.txt."
+  },
+  "scoring": {
+    "grade_malicious": 60,
+    "grade_suspicious": 25,
+    "grade_observe": 8,
+    "path_boost_prefixes": [
+      "/tmp/",
+      "/var/tmp/",
+      "/dev/shm/",
+      "/run/",
+      "/var/www/",
+      "/srv/www/",
+      "/home/",
+      "/opt/",
+      "/srv/",
+      "/var/lib/nginx/",
+      "/usr/share/nginx/",
+      "/var/ftp/"
+    ],
+    "path_boost_factor": 1.25,
+    "path_trusted_prefixes": [
+      "/usr/lib/",
+      "/usr/bin/",
+      "/usr/sbin/",
+      "/usr/libexec/",
+      "/usr/share/doc/",
+      "/usr/share/man/",
+      "/lib/",
+      "/lib64/",
+      "/usr/local/share/doc/"
+    ],
+    "path_trusted_factor": 0.35,
+    "package_owned_factor": 0.4,
+    "user_installed_factor": 0.85,
+    "max_score": 100
+  },
+  "content_rules": [
+    {
+      "id": "RS-BASH-DEVTCP",
+      "family": "reverse-shell",
+      "languages": [
+        "shell"
+      ],
+      "strings_any": [
+        "/dev/tcp/"
+      ],
+      "regex_any": [
+        "bash\\s+-i[\\s>&]",
+        "exec\\s+\\d+>&\\d+",
+        "0<&\\d+\\s+exec\\s+\\d+>",
+        "exec\\s+\\d+<>/dev/tcp/",
+        "\\$line\\s+2>&\\d+",
+        "cat\\s+<&\\d+"
+      ],
+      "min_hits": 2,
+      "weight": 55,
+      "description": "bash /dev/tcp 反弹 shell 组合（重定向 + 交互 shell）"
+    },
+    {
+      "id": "RS-BASH-DEVTCP-REDIR",
+      "family": "reverse-shell",
+      "languages": [
+        "shell"
+      ],
+      "regex_any": [
+        "\\b(?:bash|sh|zsh)\\s+-c\\s*['\\\"][^'\"]{0,120}/dev/tcp/",
+        ">&\\s*/dev/tcp/",
+        "/dev/tcp/[^\\s\"']+\\s*\\d+.{0,20}(?:>&|0<)",
+        "\\d+<>/dev/tcp/"
+      ],
+      "min_hits": 1,
+      "weight": 45,
+      "description": "/dev/tcp 重定向反弹连接"
+    },
+    {
+      "id": "RS-NC-EXEC",
+      "family": "reverse-shell",
+      "languages": [
+        "shell",
+        "perl",
+        "python",
+        "config"
+      ],
+      "regex_any": [
+        "\\bnc\\b[^\\n]{0,60}-e\\s+/(?:bin/)?(?:ba)?sh",
+        "\\bncat\\b[^\\n]{0,60}-e\\s+/(?:bin/)?(?:ba)?sh",
+        "\\bbusybox\\s+nc\\b[^\\n]{0,60}-e\\b",
+        "\\bnc\\.[^\\n]{0,40}-c\\s+/(?:bin/)?(?:ba)?sh"
+      ],
+      "min_hits": 1,
+      "weight": 50,
+      "description": "netcat -e 反弹 shell"
+    },
+    {
+      "id": "RS-SOCAT-PTY",
+      "family": "reverse-shell",
+      "languages": [
+        "shell",
+        "config"
+      ],
+      "regex_any": [
+        "\\bsocat\\b[^\\n]{0,120}EXEC:['\\\"]?[^\\n]{0,40}(?:ba)?sh",
+        "\\bsocat\\b[^\\n]{0,120}SYSTEM:['\\\"]?[^\\n]{0,40}(?:ba)?sh",
+        "\\bsocat\\b[^\\n]{0,120}pty,"
+      ],
+      "min_hits": 1,
+      "weight": 50,
+      "description": "socat EXEC/SYSTEM 反弹 shell"
+    },
+    {
+      "id": "RS-PY-PTY",
+      "family": "reverse-shell",
+      "languages": [
+        "python"
+      ],
+      "strings_any": [
+        "pty.spawn",
+        "pty.spawn(\"/bin/sh\")",
+        "/bin/sh -i"
+      ],
+      "regex_any": [
+        "socket\\.socket\\(",
+        "(?:os\\.)?dup2\\("
+      ],
+      "min_hits": 3,
+      "weight": 50,
+      "description": "Python socket+dup2+pty 反弹 shell 三件套"
+    },
+    {
+      "id": "RS-PERL-ONEWARDEN",
+      "family": "reverse-shell",
+      "languages": [
+        "perl"
+      ],
+      "strings_any": [
+        "Socket",
+        "STDIN",
+        "STDOUT",
+        "SOCK_STREAM"
+      ],
+      "regex_any": [
+        "exec\\s*\\(\\s*['\\\"]/bin/sh",
+        "socket\\s*\\(\\s*SOCKET",
+        "sockaddr_in",
+        "inet_aton",
+        "dup2\\s*\\("
+      ],
+      "min_hits": 3,
+      "weight": 45,
+      "description": "Perl 经典反弹 shell 模式"
+    },
+    {
+      "id": "RS-PHP-FSOCK",
+      "family": "reverse-shell",
+      "languages": [
+        "php"
+      ],
+      "strings_any": [
+        "fsockopen"
+      ],
+      "regex_any": [
+        "shell_exec|exec\\s*\\(|system\\s*\\(|passthru\\s*\\(|popen\\s*\\(",
+        "proc_open\\s*\\("
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "PHP fsockopen + 命令执行反弹 shell"
+    },
+    {
+      "id": "RS-AWK-INET",
+      "family": "reverse-shell",
+      "languages": [
+        "shell"
+      ],
+      "regex_any": [
+        "awk[^\\n]{0,40}/inet/tcp",
+        "gawk[^\\n]{0,40}/inet/tcp"
+      ],
+      "min_hits": 1,
+      "weight": 45,
+      "description": "awk /inet/tcp 反弹 shell"
+    },
+    {
+      "id": "RS-SH-EXEC-REDIR",
+      "family": "reverse-shell",
+      "languages": [
+        "shell",
+        "perl",
+        "python",
+        "php"
+      ],
+      "regex_any": [
+        "(?:mkfifo|rm\\s+-f)\\s+\\S*\\s*;?\\s*(?:mk)?fifo[^\\n]{0,60}(?:nc|telnet)",
+        "\\bexec\\s+\\d+<\\s*/dev/null",
+        "telnet\\s+\\S+\\s+\\d+\\s+\\|\\s*/?(?:bin/)?(?:ba)?sh"
+      ],
+      "min_hits": 2,
+      "weight": 40,
+      "description": "FIFO/telnet 管道反弹 shell 变体"
+    },
+    {
+      "id": "WS-PHP-INPUT-EXEC",
+      "family": "webshell-php",
+      "languages": [
+        "php"
+      ],
+      "regex_any": [
+        "@?(?:eval|assert)\\s*\\(\\s*\\$_(?:GET|POST|REQUEST|COOKIE)",
+        "\\$_(?:GET|POST|REQUEST)\\[[^\\]]{0,30}\\]\\)?\\s*;?\\s*@?(?:eval|assert)\\s*\\(",
+        "(?:eval|assert)\\s*\\(\\s*(?:base64_decode|gzinflate|str_rot13|gzuncompress|rawurldecode)\\s*\\(",
+        "create_function\\s*\\([^)]{0,80}\\$_(?:GET|POST|REQUEST)",
+        "preg_replace\\s*\\(\\s*['\\\"][^'\"]*/e['\\\"][^\\n]{0,120}\\$_(?:GET|POST|REQUEST)",
+        "(?:call_user_func|call_user_func_array)\\s*\\(\\s*['\\\"]?(?:assert|eval|system|shell_exec)"
+      ],
+      "min_hits": 1,
+      "weight": 60,
+      "description": "PHP 一句话/输入直执行 webshell（菜刀/蚁剑族）"
+    },
+    {
+      "id": "WS-PHP-VARFUNC",
+      "family": "webshell-php",
+      "languages": [
+        "php"
+      ],
+      "regex_any": [
+        "\\$[A-Za-z_]\\w*\\s*=\\s*\\$_(?:GET|POST|REQUEST)\\[[^\\]]{1,40}\\]\\s*;[\\s\\S]{0,200}\\$[A-Za-z_]\\w*\\s*\\(",
+        "\\$\\{['\\\"]?\\w+['\\\"]?\\}\\s*\\(\\s*\\$_",
+        "\\$_(?:GET|POST|REQUEST)\\[[^\\]]{1,40}\\]\\s*\\(\\s*\\$_(?:GET|POST|REQUEST)"
+      ],
+      "min_hits": 1,
+      "weight": 55,
+      "description": "PHP 可变函数调用 webshell（绕过静态函数名检测）"
+    },
+    {
+      "id": "WS-PHP-DECODE-CHAIN",
+      "family": "webshell-php",
+      "languages": [
+        "php"
+      ],
+      "strings_any": [
+        "base64_decode",
+        "gzinflate",
+        "gzuncompress",
+        "str_rot13",
+        "strrev",
+        "convert_uudecode"
+      ],
+      "regex_any": [
+        "(?:eval|assert|system|shell_exec|passthru|preg_replace[^)]*/e)\\s*\\(\\s*\\$\\{?\\w*(?:decode|decoded|data|payload|code|cmd)",
+        "\\$_(?:GET|POST|REQUEST)[^\\n]{0,80}(?:base64_decode|gzinflate|gzuncompress)"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "PHP 解码链 + 动态执行"
+    },
+    {
+      "id": "WS-PHP-ENCRYPTED",
+      "family": "webshell-php",
+      "languages": [
+        "php"
+      ],
+      "strings_any": [
+        "openssl_decrypt",
+        "mcrypt_decrypt",
+        "sodium_crypto_secretbox_open"
+      ],
+      "regex_any": [
+        "openssl_decrypt[^\\n]{0,200}\\$_(?:GET|POST|REQUEST|COOKIE)",
+        "openssl_decrypt[^\\n]{0,200}\\$_SESSION",
+        "(?:aes-\\d{3}-cbc|aes-\\d{3}-ctr|AES::decrypt)",
+        "session_start\\(\\)[\\s\\S]{0,300}openssl_decrypt"
+      ],
+      "min_hits": 2,
+      "weight": 50,
+      "description": "PHP 加密型 webshell（冰蝎/哥斯拉族特征）"
+    },
+    {
+      "id": "WS-PHP-FAMILY-MARKER",
+      "family": "webshell-php",
+      "languages": [],
+      "strings_any": [
+        "FilesMan",
+        "WSO 2.",
+        "b374k",
+        "c99shell",
+        "r57shell",
+        "wso.php",
+        "FilesTools",
+        "Anti-CTF",
+        "Shell Rebotes",
+        "Ani-Shell",
+        "Cyber Shell"
+      ],
+      "min_hits": 1,
+      "weight": 65,
+      "description": "已知 webshell 家族标识串"
+    },
+    {
+      "id": "WS-PHP-INPUT-DATACONV",
+      "family": "webshell-php",
+      "languages": [
+        "php"
+      ],
+      "regex_any": [
+        "\\$_(?:GET|POST|REQUEST)\\[[^\\]]{1,30}\\][^\\n]{0,40}base64_decode[^\\n]{0,40}\\$_(?:GET|POST|REQUEST)",
+        "foreach\\s*\\(\\s*\\$_(?:GET|POST|REQUEST)",
+        "\\$_REQUEST\\s*=\\s*array_map",
+        "extract\\s*\\(\\s*\\$_(?:GET|POST|REQUEST)"
+      ],
+      "min_hits": 1,
+      "weight": 30,
+      "description": "PHP 输入批量解包/编码转换（弱信号）"
+    },
+    {
+      "id": "WS-JSP-CLASSLOADER-CRYPTO",
+      "family": "webshell-jsp",
+      "languages": [
+        "java",
+        "jsp"
+      ],
+      "strings_any": [
+        "defineClass",
+        "ClassLoader"
+      ],
+      "regex_any": [
+        "javax\\.crypto|Cipher\\.getInstance|AES/"
+      ],
+      "min_hits": 2,
+      "weight": 55,
+      "description": "JSP 加密 ClassLoader webshell（冰蝎/哥斯拉 JSP 族）"
+    },
+    {
+      "id": "WS-JSP-RUNTIME-INPUT",
+      "family": "webshell-jsp",
+      "languages": [
+        "java",
+        "jsp"
+      ],
+      "strings_any": [
+        "Runtime.getRuntime().exec"
+      ],
+      "regex_any": [
+        "request\\.getParameter",
+        "getParameterValues"
+      ],
+      "min_hits": 2,
+      "weight": 55,
+      "description": "JSP 输入直命令执行 webshell"
+    },
+    {
+      "id": "WS-JSP-MEMORY-REGISTER",
+      "family": "webshell-jsp",
+      "languages": [
+        "java",
+        "jsp"
+      ],
+      "strings_any": [
+        "addFilterDef",
+        "FilterDef",
+        "FilterMap",
+        "StandardContext",
+        "addListener",
+        "Wrapper",
+        " Valve "
+      ],
+      "regex_any": [
+        "setFilterClass|setServletClass|addFilterMapBefore|setListener",
+        "addApplicationEventListener",
+        "createWrapper",
+        "addChild"
+      ],
+      "min_hits": 3,
+      "weight": 45,
+      "description": "JSP/Java 内存马 Filter/Listener/Valve 注册特征"
+    },
+    {
+      "id": "WS-ASP-EVAL-REQUEST",
+      "family": "webshell-asp",
+      "languages": [
+        "asp",
+        "aspx"
+      ],
+      "regex_any": [
+        "Eval\\s*\\(\\s*Request[\\.\\(]",
+        "eval\\s*\\(\\s*request[\\.\\(]",
+        "Execute\\s*\\(\\s*Request",
+        "ExecuteGlobal\\s*\\(\\s*Request"
+      ],
+      "min_hits": 1,
+      "weight": 60,
+      "description": "ASP/ASPX Eval(Request) 一句话 webshell"
+    },
+    {
+      "id": "WS-ASPX-DECODE-LOAD",
+      "family": "webshell-asp",
+      "languages": [
+        "aspx"
+      ],
+      "strings_any": [
+        "FromBase64String",
+        "Assembly.Load"
+      ],
+      "min_hits": 2,
+      "weight": 50,
+      "description": "ASPX Base64 反序列化加载 webshell"
+    },
+    {
+      "id": "WS-NODE-INPUT-EXEC",
+      "family": "webshell-node",
+      "languages": [
+        "node"
+      ],
+      "strings_any": [
+        "child_process"
+      ],
+      "regex_any": [
+        "(?:exec|execSync|spawn)\\s*\\([^\\n]{0,60}(?:req\\.(?:body|query)|params\\.)"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "Node.js 请求参数直命令执行 webshell"
+    },
+    {
+      "id": "WS-PY-INPUT-EXEC",
+      "family": "webshell-python",
+      "languages": [
+        "python"
+      ],
+      "strings_any": [
+        "subprocess.",
+        "os.system",
+        "os.popen",
+        "shell=True",
+        "check_output",
+        "commands.getoutput"
+      ],
+      "regex_any": [
+        "request\\.(?:args|form|values|data|json|GET|POST)",
+        "self\\.request\\.(?:args|form|data)"
+      ],
+      "min_hits": 2,
+      "weight": 40,
+      "description": "Python Web 框架输入直命令执行"
+    },
+    {
+      "id": "MINER-STRATUM",
+      "family": "miner",
+      "languages": [],
+      "strings_any": [
+        "stratum+tcp://",
+        "stratum+ssl://",
+        "stratum2+tcp://"
+      ],
+      "min_hits": 1,
+      "weight": 65,
+      "description": "挖矿 stratum 协议串"
+    },
+    {
+      "id": "MINER-XMRIG-KEYS",
+      "family": "miner",
+      "languages": [],
+      "strings_any": [
+        "donate-level",
+        "randomx",
+        "cryptonight",
+        "xmrig",
+        "nicehash",
+        "rx/0",
+        "rx/arq",
+        "cn-heavy"
+      ],
+      "min_hits": 2,
+      "weight": 60,
+      "description": "XMRig/CryptoNight 挖矿配置特征"
+    },
+    {
+      "id": "MINER-POOL-CONFIG",
+      "family": "miner",
+      "languages": [
+        "config",
+        "json",
+        "shell",
+        "python",
+        "php"
+      ],
+      "regex_any": [
+        "\"(?:pool|pools|url)\"\\s*:\\s*\"[^\"\\n]*(?:minexmr|supportxmr|nanopool|f2pool|antpool|pool\\.hashvault|monerohash|xmrpool|luxor|nerdminer|2miners|herominers)",
+        "\"user\"\\s*:\\s*\"[4-9][0-9AB][1-9A-HJ-NP-Za-km-z]{80,}\"",
+        "xmrig|(?:cpuminer|minerd|cryptominer|monero miner)"
+      ],
+      "min_hits": 1,
+      "weight": 45,
+      "description": "矿池域名/门罗钱包地址格式"
+    },
+    {
+      "id": "MINER-FAMILY-MARKER",
+      "family": "miner",
+      "languages": [],
+      "strings_any": [
+        "kdevtmpfsi",
+        "kinsing",
+        "ddg.",
+        "confluence_miner",
+        "minerd",
+        "cpuminer"
+      ],
+      "min_hits": 1,
+      "weight": 60,
+      "description": "已知挖矿木马家族标识（kdevtmpfsi/kinsing/DDG）"
+    },
+    {
+      "id": "PROXY-FRP",
+      "family": "proxy-tool",
+      "languages": [
+        "config",
+        "toml",
+        "shell",
+        "json"
+      ],
+      "strings_any": [
+        "frpc",
+        "frps"
+      ],
+      "regex_any": [
+        "server_addr\\s*=",
+        "server_port\\s*=",
+        "\\[\\[?proxies\\]?\\]",
+        "token\\s*=\\s*['\\\"]?\\w{8,}"
+      ],
+      "min_hits": 2,
+      "weight": 55,
+      "description": "frp 代理配置特征"
+    },
+    {
+      "id": "PROXY-NPS",
+      "family": "proxy-tool",
+      "languages": [
+        "config",
+        "shell"
+      ],
+      "strings_any": [
+        "bridgePort",
+        "web_username",
+        "web_password",
+        "public_key",
+        "npc"
+      ],
+      "min_hits": 2,
+      "weight": 55,
+      "description": "nps/npc 代理配置特征"
+    },
+    {
+      "id": "PROXY-EW",
+      "family": "proxy-tool",
+      "languages": [],
+      "strings_any": [
+        "ssocksd",
+        "rssocks",
+        "lcx_slave",
+        "lcx_tran",
+        "lcx_listen",
+        "rcsocks",
+        "sssocks"
+      ],
+      "min_hits": 1,
+      "weight": 65,
+      "description": "EarthWorm/ew 代理工具唯一性命令串"
+    },
+    {
+      "id": "PROXY-GSOCKET",
+      "family": "proxy-tool",
+      "languages": [],
+      "strings_any": [
+        "gs-netcat",
+        "GSRN",
+        "GSOCKET_SECRET",
+        "GSOCKET_ARGS",
+        "gsocket"
+      ],
+      "min_hits": 1,
+      "weight": 60,
+      "description": "gsocket 隐蔽回连通道特征"
+    },
+    {
+      "id": "PROXY-CHISEL",
+      "family": "proxy-tool",
+      "languages": [
+        "shell",
+        "config"
+      ],
+      "strings_any": [
+        "chisel"
+      ],
+      "regex_any": [
+        "chisel[^\\n]{0,60}(?:client|server|reverse|R:|ws://|wss://)",
+        "chisel\\s+(?:client|server)"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "chisel 隧道命令特征"
+    },
+    {
+      "id": "PROXY-REGEOrg",
+      "family": "proxy-tool",
+      "languages": [
+        "python",
+        "jsp",
+        "php"
+      ],
+      "strings_any": [
+        "X-CMD",
+        "X-TAG",
+        "reGeorg",
+        "tunnel.jsp",
+        "tunnel.aspx",
+        "tunnel.nosocket.php",
+        "neoReGeorg"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "reGeorg/neoReGeorg 隧道特征"
+    },
+    {
+      "id": "PROXY-STOWAWAY",
+      "family": "proxy-tool",
+      "languages": [],
+      "strings_any": [
+        "stowaway",
+        "Send heartbeat",
+        "ss -tunlp"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "stowaway 多级代理特征"
+    },
+    {
+      "id": "C2-METERPRETER",
+      "family": "c2-framework",
+      "languages": [],
+      "strings_any": [
+        "meterpreter",
+        "reverse_tcp",
+        "windows/x64/meterpreter",
+        "msfvenom",
+        "metasploit"
+      ],
+      "min_hits": 1,
+      "weight": 60,
+      "description": "Metasploit/meterpreter 载荷特征"
+    },
+    {
+      "id": "C2-SLIVER",
+      "family": "c2-framework",
+      "languages": [],
+      "strings_any": [
+        "sliver",
+        "implant_",
+        "SliverCore"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "Sliver C2 特征"
+    },
+    {
+      "id": "C2-COBALTSTRIKE-STYLE",
+      "family": "c2-framework",
+      "languages": [],
+      "regex_any": [
+        "(?:beacon|cobaltstrike)[^\\n]{0,40}(?:\\.profile|c2|teamserver)",
+        "%%COMSPEC%%"
+      ],
+      "min_hits": 1,
+      "weight": 40,
+      "description": "Cobalt Strike 风格 C2 配置特征"
+    },
+    {
+      "id": "EXP-KERNEL-CRED",
+      "family": "kernel-exploit",
+      "languages": [
+        "c-cpp",
+        "shell",
+        "python"
+      ],
+      "strings_any": [
+        "commit_creds",
+        "prepare_kernel_cred"
+      ],
+      "min_hits": 2,
+      "weight": 55,
+      "description": "内核提权载荷特征（commit_creds+prepare_kernel_cred 组合）"
+    },
+    {
+      "id": "EXP-KNOWN-CVE",
+      "family": "kernel-exploit",
+      "languages": [],
+      "regex_any": [
+        "dirtyc(?:ow|0w)",
+        "CVE-2016-5195",
+        "CVE-2021-4034",
+        "CVE-2021-3156",
+        "CVE-2022-0847",
+        "CVE-2021-3493",
+        "PwnKit",
+        "Dirtypipe",
+        "dirty_pipe",
+        "CVE-2019-5736",
+        "CVE-2018-1000001",
+        "dirty_pipe|dirtypipe"
+      ],
+      "min_hits": 1,
+      "weight": 50,
+      "description": "知名 Linux 本地提权漏洞利用标识"
+    },
+    {
+      "id": "EXP-PRIVESC-RECON",
+      "family": "recon-tool",
+      "languages": [],
+      "strings_any": [
+        "linux-exploit-suggester",
+        "linpeas",
+        "LinEnum",
+        "linuxprivchecker",
+        "pspy",
+        "lse.sh",
+        "LinuxPrivesc"
+      ],
+      "min_hits": 1,
+      "weight": 35,
+      "description": "提权/侦察工具包标识（弱信号）"
+    },
+    {
+      "id": "RK-DIAMORPHINE",
+      "family": "rootkit",
+      "languages": [],
+      "strings_any": [
+        "diamorphine"
+      ],
+      "min_hits": 1,
+      "weight": 65,
+      "description": "Diamorphine LKM rootkit 标识"
+    },
+    {
+      "id": "RK-HIDE-TOOLING",
+      "family": "rootkit",
+      "languages": [],
+      "regex_any": [
+        "libprocesshider",
+        "hide\\-pid",
+        "\\bhide_process\\b",
+        "\\bhidden_port\\b",
+        "module_hide"
+      ],
+      "min_hits": 1,
+      "weight": 45,
+      "description": "用户态隐藏工具特征（libprocesshider 等）"
+    },
+    {
+      "id": "AF-ANTI-FORENSICS",
+      "family": "anti-forensics",
+      "languages": [
+        "shell"
+      ],
+      "regex_any": [
+        "(?:history|export\\s+HISTSIZE)\\s*-?c?\\s*;?\\s*unset\\s+HISTFILE",
+        "unset\\s+HISTFILE[\\s\\S]{0,60}unset\\s+HISTORY",
+        "shred\\s+[^\\n]{0,40}(?:bash_history|\\.history)",
+        "\\b(?:rm|mv|ln)[^\\n]{0,30}bash_history[^\\n]{0,30}(?:/dev/null|/dev/zero)"
+      ],
+      "min_hits": 1,
+      "weight": 40,
+      "path_boost_prefixes": [
+        "/tmp/",
+        "/var/tmp/",
+        "/dev/shm/"
+      ],
+      "description": "历史命令清除/反取证行为"
+    },
+    {
+      "id": "PERS-CRON-DOWNLOAD-EXEC",
+      "family": "persistence-content",
+      "languages": [],
+      "regex_any": [
+        "(?:curl|wget)[^\\n]{1,120}\\|\\s*(?:ba|z)?sh\\b",
+        "(?:curl|wget)[^\\n]{1,120}\\|\\s*bash",
+        "(?:curl|wget)[^\\n]{1,120}(?:chmod\\s+\\+x|/dev/shm/|/tmp/)"
+      ],
+      "min_hits": 1,
+      "weight": 55,
+      "description": "cron/持久化文件中的下载执行链"
+    },
+    {
+      "id": "PERS-DOWNLOAD-EXEC",
+      "family": "persistence-content",
+      "languages": [
+        "shell"
+      ],
+      "regex_any": [
+        "(?:curl|wget)[^\\n]{1,120}\\|\\s*(?:ba|z)?sh\\b",
+        "(?:curl|wget)[^\\n]{1,120}\\|\\s*bash"
+      ],
+      "min_hits": 1,
+      "weight": 35,
+      "path_boost_prefixes": [
+        "/etc/cron",
+        "/var/spool/cron",
+        "/etc/systemd/",
+        "/usr/lib/systemd/",
+        "/etc/init.d/",
+        "/etc/rc",
+        "/etc/profile",
+        "/etc/profile.d/"
+      ],
+      "description": "脚本内下载执行链（持久化路径加权）"
+    },
+    {
+      "id": "LOADER-SHELLCODE-EXEC",
+      "family": "loader",
+      "languages": [
+        "shell",
+        "python",
+        "perl",
+        "c-cpp"
+      ],
+      "regex_any": [
+        "(?:python|perl|ruby)\\s+-e\\s+['\\\"][^'\\\"]{0,200}socket",
+        "\\\\x6a\\\\x29\\\\x58|\\\\x6a\\\\x2a\\\\x58",
+        "msfvenom[^\\n]{0,120}(?:-f\\s+elf|-p\\s+linux)",
+        "base64\\s+-d\\s*<??[^\\n]{0,40}\\|\\s*(?:ba)?sh"
+      ],
+      "min_hits": 1,
+      "weight": 50,
+      "description": "shellcode/ELF 载荷投递特征"
+    },
+    {
+      "id": "BRUTEFORCE-TOOL",
+      "family": "attack-tool",
+      "languages": [],
+      "strings_any": [
+        "hydra",
+        "medusa -h",
+        "patator",
+        "brutespray",
+        "ssh-brute"
+      ],
+      "regex_any": [
+        "hydra\\s+-[lL]\\s+\\S+\\s+-[pP]"
+      ],
+      "min_hits": 1,
+      "weight": 35,
+      "path_boost_prefixes": [
+        "/tmp/",
+        "/var/tmp/",
+        "/dev/shm/",
+        "/opt/"
+      ],
+      "description": "爆破工具标识"
+    },
+    {
+      "id": "SUSPICIOUS-EXEC-TMP",
+      "family": "runtime-anomaly",
+      "languages": [
+        "shell"
+      ],
+      "regex_any": [
+        "chmod\\s+\\+x\\s+/(?:tmp|dev/shm|var/tmp)/",
+        "base64\\s+-d[^\\n]{0,80}\\|\\s*(?:ba)?sh"
+      ],
+      "min_hits": 1,
+      "weight": 30,
+      "description": "临时目录提权执行链"
+    },
+    {
+      "id": "WS-PHP-DYNAMIC-CALLABLE",
+      "family": "webshell-php",
+      "languages": [
+        "php"
+      ],
+      "regex_any": [
+        "\\((?:strrev|base64_decode|gzinflate|call_user_func|preg_replace[^)]*|assert)\\s*\\([^)]*\\)\\s*\\(\\s*\\$_(?:GET|POST|REQUEST|COOKIE)"
+      ],
+      "min_hits": 1,
+      "weight": 60,
+      "description": "PHP 解码函数返回值直接作为可调用对象执行"
+    },
+    {
+      "id": "WS-PHP-INPUT-STREAM",
+      "family": "webshell-php",
+      "languages": [
+        "php"
+      ],
+      "regex_any": [
+        "eval\\s*\\(\\s*(?:file_get_contents\\s*\\(\\s*)?['\"]php://input",
+        "assert\\s*\\(\\s*(?:file_get_contents\\s*\\(\\s*)?['\"]php://input",
+        "file_get_contents\\s*\\(\\s*['\"]php://input['\"]\\s*\\)\\s*;?[\\s\\S]{0,80}(?:eval|assert|preg_replace)"
+      ],
+      "min_hits": 1,
+      "weight": 60,
+      "description": "php://input 直执行（蚁剑默认流）"
+    },
+    {
+      "id": "WS-PHP-PREPEND-DIRECTIVE",
+      "family": "webshell-php",
+      "languages": [],
+      "strings_any": [
+        "auto_prepend_file",
+        "auto_append_file"
+      ],
+      "regex_any": [
+        "(?:auto_prepend_file|auto_append_file)\\s*=?\\s*['\"]?/(?:tmp|var/tmp|dev/shm|home|root)/"
+      ],
+      "min_hits": 1,
+      "weight": 50,
+      "description": ".htaccess/.user.ini auto_prepend_file 持久化后门"
+    },
+    {
+      "id": "WS-JSP-LISTENER-MEMSHELL",
+      "family": "webshell-jsp",
+      "languages": [
+        "java",
+        "jsp"
+      ],
+      "strings_any": [
+        "addListener",
+        "ApplicationEventListener",
+        "SessionListener",
+        "addApplicationEventListener",
+        "createWrapper",
+        "addChild"
+      ],
+      "regex_any": [
+        "setServletClass|setFilterClass|ListenerManager"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "JSP Listener/Servlet 型内存马注册"
+    },
+    {
+      "id": "WS-ASPX-PROC-INPUT",
+      "family": "webshell-asp",
+      "languages": [
+        "aspx"
+      ],
+      "strings_any": [
+        "Process.Start",
+        "ProcessStartInfo",
+        "System.Diagnostics.Process"
+      ],
+      "regex_any": [
+        "Request\\[",
+        "Request\\.Form|Request\\.QueryString|Request\\.Params"
+      ],
+      "min_hits": 2,
+      "weight": 50,
+      "description": "ASPX 请求参数直进程执行"
+    },
+    {
+      "id": "RS-SH-FIFO-TELNET",
+      "family": "reverse-shell",
+      "languages": [
+        "shell"
+      ],
+      "regex_any": [
+        "mkfifo[^\\n]{0,80}\\|\\s*(?:nc|ncat|busybox)",
+        "\\|\\s*/?(?:bin/)?(?:ba)?sh\\s*2>&1\\s*\\|\\s*(?:nc|telnet)",
+        "telnet\\s+\\S+\\s+\\d+\\s+\\|\\s*/?(?:bin/)?(?:ba)?sh"
+      ],
+      "min_hits": 1,
+      "weight": 45,
+      "description": "FIFO/telnet 双管道反弹 shell"
+    },
+    {
+      "id": "RS-RUBY-SOCKET",
+      "family": "reverse-shell",
+      "languages": [
+        "ruby"
+      ],
+      "strings_any": [
+        "TCPSocket"
+      ],
+      "regex_any": [
+        "popen3|Open3",
+        "/bin/sh\\s*-i"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "Ruby TCPSocket+Open3 反弹 shell"
+    },
+    {
+      "id": "RS-PHP-PROCOPEN",
+      "family": "reverse-shell",
+      "languages": [
+        "php"
+      ],
+      "strings_any": [
+        "fsockopen",
+        "proc_open"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "PHP fsockopen+proc_open 反弹 shell"
+    },
+    {
+      "id": "RS-OPENSSL-PIPE",
+      "family": "reverse-shell",
+      "languages": [
+        "shell",
+        "config"
+      ],
+      "regex_any": [
+        "openssl\\s+s_client[^\\n]{0,100}\\|\\s*/?(?:bin/)?(?:ba)?sh",
+        "openssl\\s+s_client[^\\n]{0,100}-quiet[^\\n]{0,60}-connect"
+      ],
+      "min_hits": 1,
+      "weight": 45,
+      "description": "openssl s_client 加密反弹 shell 管道"
+    },
+    {
+      "id": "PROXY-IOX",
+      "family": "proxy-tool",
+      "languages": [],
+      "regex_any": [
+        "iox\\s+(?:proxy|listener|relay)",
+        "traffic\\s+key\\s+tls"
+      ],
+      "min_hits": 1,
+      "weight": 55,
+      "description": "iox 代理工具命令特征"
+    },
+    {
+      "id": "PROXY-REVERSE-TUNNEL",
+      "family": "proxy-tool",
+      "languages": [
+        "shell"
+      ],
+      "regex_any": [
+        "ssh\\s+[^\\n]{0,80}-N\\s+-R",
+        "ssh\\s+[^\\n]{0,80}-R\\s+\\d+:"
+      ],
+      "strings_any": [
+        "SOCKS4A",
+        "socat"
+      ],
+      "min_hits": 2,
+      "weight": 30,
+      "description": "SSH 反向隧道+SOCKS 组合（运维亦常见，弱信号）"
+    },
+    {
+      "id": "EXP-RUNC-ESCAPE",
+      "family": "kernel-exploit",
+      "languages": [],
+      "regex_any": [
+        "CVE-2019-5736",
+        "runc\\s+(?:escape|overwrite)|overwrite\\s+runc\\s+binary"
+      ],
+      "min_hits": 1,
+      "weight": 50,
+      "description": "runc 容器逃逸 CVE-2019-5736"
+    },
+    {
+      "id": "EXP-MEMPODIP",
+      "family": "kernel-exploit",
+      "languages": [],
+      "regex_any": [
+        "CVE-2018-1000001",
+        "mempodip"
+      ],
+      "min_hits": 1,
+      "weight": 50,
+      "description": "glibc realpath 提权 mempodip"
+    },
+    {
+      "id": "C2-HAVOC",
+      "family": "c2-framework",
+      "languages": [],
+      "strings_any": [
+        "havoc",
+        "demon payload",
+        "teamserver",
+        "yaotl"
+      ],
+      "min_hits": 2,
+      "weight": 55,
+      "description": "Havoc C2 框架特征"
+    },
+    {
+      "id": "C2-EMPIRE",
+      "family": "c2-framework",
+      "languages": [],
+      "strings_any": [
+        "empire",
+        "usemodule",
+        "stager"
+      ],
+      "regex_any": [
+        "powershell[\\s\\S]{0,40}bypassuac",
+        "Set-AgentListener",
+        "-nop\\s+-w\\s+hidden\\s+-enc"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "PowerShell Empire 框架特征"
+    },
+    {
+      "id": "C2-CHAOS",
+      "family": "c2-framework",
+      "languages": [],
+      "regex_any": [
+        "chaos\\s+-reverse|chaos\\s+RAT|go\\s+build[^\\n]{0,60}-o\\s+chaos"
+      ],
+      "min_hits": 1,
+      "weight": 45,
+      "description": "Chaos RAT 特征"
+    },
+    {
+      "id": "PERS-SYSTEMD-UNSAFE-EXEC",
+      "family": "persistence-content",
+      "languages": [],
+      "regex_any": [
+        "Exec(?:Start|StartPre|Stop|Reload)\\s*=\\s*['\"]?/(?:tmp|var/tmp|dev/shm|home|root|run/user)/"
+      ],
+      "min_hits": 1,
+      "weight": 55,
+      "description": "systemd unit ExecStart 指向临时/用户目录"
+    },
+    {
+      "id": "PERS-AUTHORIZED-KEYS-CMD",
+      "family": "persistence-content",
+      "languages": [],
+      "regex_any": [
+        "command=\\\"[^\\\"]{8,}\\\"",
+        "command='[^']{8,}'"
+      ],
+      "strings_any": [
+        "ssh-rsa",
+        "ssh-ed25519",
+        "ecdsa-sha2"
+      ],
+      "min_hits": 2,
+      "weight": 50,
+      "description": "authorized_keys command= 强制命令后门"
+    },
+    {
+      "id": "PERS-LD-PRELOAD-CONTENT",
+      "family": "persistence-content",
+      "languages": [],
+      "regex_any": [
+        "(?:^|\\n)\\s*/(?:tmp|var/tmp|dev/shm|home|root)/[^\\n]*\\.so\\s*(?:\\n|$)"
+      ],
+      "min_hits": 1,
+      "weight": 55,
+      "description": "ld.so.preload 内容指向临时/用户目录 .so"
+    },
+    {
+      "id": "PERS-SHELL-HIJACK",
+      "family": "persistence-content",
+      "languages": [],
+      "regex_any": [
+        "alias\\s+(?:sudo|ssh|su|ls)\\s*=\\s*['\\\"][^\\n]{0,60}(?:/tmp|/dev/shm|curl|wget)",
+        "PROMPT_COMMAND=[^\\n]{0,80}(?:/tmp|/dev/shm|curl|wget|history\\s+-c)"
+      ],
+      "min_hits": 1,
+      "weight": 50,
+      "description": "shell 别名/PROMPT_COMMAND 劫持"
+    },
+    {
+      "id": "PERS-UDEV-RULE",
+      "family": "persistence-content",
+      "languages": [],
+      "strings_any": [
+        "RUN+="
+      ],
+      "regex_any": [
+        "RUN\\+=[^\\n]{0,80}(?:/tmp|/dev/shm|/home|curl|wget|sh -c)"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "udev 规则 RUN+= 投毒"
+    },
+    {
+      "id": "AF-LOG-WIPE",
+      "family": "anti-forensics",
+      "languages": [
+        "shell"
+      ],
+      "regex_any": [
+        "(?:echo\\s*>|truncate\\s+-s\\s*0|shred\\s+[^\\n]{0,20})\\s*/var/log/(?:auth|secure|messages|wtmp|btmp|lastlog)|>/var/log/(?:auth\\.log|secure|wtmp|btmp)",
+        "find\\s+/var/log[^\\n]{0,40}-delete"
+      ],
+      "min_hits": 1,
+      "weight": 45,
+      "description": "系统日志擦除"
+    },
+    {
+      "id": "AF-TIMESTAMP-FORGE",
+      "family": "anti-forensics",
+      "languages": [
+        "shell"
+      ],
+      "regex_any": [
+        "touch\\s+-r\\s+\\S+\\s+/(?:tmp|dev/shm|var/tmp|home|root)/",
+        "libfaketime"
+      ],
+      "min_hits": 1,
+      "weight": 35,
+      "description": "时间戳伪造（touch -r / faketime）"
+    },
+    {
+      "id": "RK-REPTILE",
+      "family": "rootkit",
+      "languages": [],
+      "regex_any": [
+        "reptile[_-](?:cmd|ko|rootkit)",
+        "reptile\\s+CLI",
+        "reptile\\s+rootkit"
+      ],
+      "min_hits": 1,
+      "weight": 55,
+      "description": "Reptile LKM rootkit 标识"
+    },
+    {
+      "id": "RECON-SCAN-TOOL",
+      "family": "recon-tool",
+      "languages": [],
+      "strings_any": [
+        "nmap -sS",
+        "nmap --script",
+        "masscan",
+        "sqlmap -u",
+        "--os-shell"
+      ],
+      "min_hits": 1,
+      "weight": 30,
+      "path_boost_prefixes": [
+        "/tmp/",
+        "/var/tmp/",
+        "/dev/shm/"
+      ],
+      "description": "扫描/注入工具命令（弱信号，临时目录加权）"
+    },
+    {
+      "id": "LOADER-PY-MMAP-EXEC",
+      "family": "loader",
+      "languages": [
+        "python"
+      ],
+      "strings_any": [
+        "PROT_EXEC",
+        "ctypes"
+      ],
+      "regex_any": [
+        "mmap\\.mmap[^\\n]{0,80}PROT_(?:READ\\|)?[^\\n]*PROT_EXEC",
+        "CFUNCTYPE\\(",
+        "memmove\\("
+      ],
+      "min_hits": 3,
+      "weight": 50,
+      "description": "Python mmap+ctypes shellcode 加载器"
+    },
+    {
+      "id": "PERS-SYSTEMD-SOCKET",
+      "family": "persistence-content",
+      "languages": [
+        "config"
+      ],
+      "strings_any": [
+        "ListenStream=",
+        "[Socket]",
+        "Accept="
+      ],
+      "regex_any": [
+        "\\[\\s*Socket\\][\\s\\S]{0,300}ListenStream=\\d+",
+        "Accept=yes[\\s\\S]{0,200}ExecStart"
+      ],
+      "min_hits": 2,
+      "weight": 50,
+      "description": "systemd socket activation 后门（.socket 单元触发执行）"
+    },
+    {
+      "id": "EXP-CORE-PATTERN",
+      "family": "kernel-exploit",
+      "languages": [],
+      "strings_any": [
+        "core_pattern"
+      ],
+      "regex_any": [
+        "core_pattern\\s*=\\s*['\"]?\\|?\\s*/(?:tmp|dev/shm|home|root)/",
+        "echo\\s+['\"]?\\|\\s*/(?:tmp|dev/shm)/"
+      ],
+      "min_hits": 2,
+      "weight": 55,
+      "description": "core_pattern 管道容器逃逸/宿主执行"
+    },
+    {
+      "id": "CNT-DOCKER-SOCK-ABUSE",
+      "family": "runtime-anomaly",
+      "languages": [
+        "shell",
+        "config",
+        "yaml",
+        "python"
+      ],
+      "strings_any": [
+        "/var/run/docker.sock",
+        "-v /:/host",
+        "--privileged"
+      ],
+      "regex_any": [
+        "docker\\s+run[^\\n]{0,120}(?:-v\\s+/:/|--privileged)",
+        "docker\\.sock[^\\n]{0,60}(?:chmod|curl|exec)"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "docker.sock 挂载/特权容器滥用（逃逸前兆）"
+    },
+    {
+      "id": "SUPPLY-PIP-HOOK",
+      "family": "attack-tool",
+      "languages": [
+        "python"
+      ],
+      "strings_any": [
+        "cmdclass",
+        "entry_points"
+      ],
+      "regex_any": [
+        "cmdclass[^\\n]{0,60}(?:subprocess|os\\.system|popen)",
+        "(?:subprocess|os\\.system|popen)[^\\n]{0,80}(?:curl|wget)",
+        "base64[\\s\\S]{0,80}(?:exec|eval)\\s*\\("
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "pip setup.py 安装钩子执行（供应链投毒）"
+    },
+    {
+      "id": "SUPPLY-NPM-HOOK",
+      "family": "attack-tool",
+      "languages": [
+        "json"
+      ],
+      "regex_any": [
+        "\"(?:pre|post)install\"\\s*:[^\\n]{0,120}(?:curl|wget|node |sh |bash )"
+      ],
+      "strings_any": [
+        "child_process"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "npm pre/postinstall 钩子执行（供应链投毒）"
+    },
+    {
+      "id": "PERS-PAM-EXEC",
+      "family": "persistence-content",
+      "languages": [
+        "config"
+      ],
+      "regex_any": [
+        "^\\s*auth\\s+(?:sufficient|optional|required)\\s+pam_exec\\.so[^\\n]*\\.(?:sh|py|so)",
+        "pam_exec\\.so[^\\n]{0,80}(?:/tmp|/dev/shm|/home|/root)"
+      ],
+      "min_hits": 1,
+      "weight": 55,
+      "description": "PAM pam_exec 认证钩子后门"
+    },
+    {
+      "id": "BAS-SUDOERS-WILD",
+      "family": "persistence-content",
+      "languages": [
+        "config"
+      ],
+      "regex_any": [
+        "^\\s*[^#\\n]{1,80}NOPASSWD\\s*:\\s*(?:ALL|[\\w*]+\\s*:\\s*ALL)"
+      ],
+      "min_hits": 1,
+      "weight": 30,
+      "path_boost_prefixes": [
+        "/etc/cron",
+        "/var/spool/cron",
+        "/tmp/",
+        "/dev/shm/",
+        "/home/"
+      ],
+      "description": "sudoers NOPASSWD 通配授权（基线弱信号，持久化路径加权）"
+    },
+    {
+      "id": "PERS-MODPROBE-HIJACK",
+      "family": "persistence-content",
+      "languages": [
+        "config"
+      ],
+      "regex_any": [
+        "^\\s*install\\s+\\S+\\s+/(?:bin/)?(?:ba|z)?sh\\b",
+        "^\\s*insmod\\s+/(?:tmp|var/tmp|dev/shm|home|root)/"
+      ],
+      "min_hits": 1,
+      "weight": 55,
+      "description": "modprobe 配置劫持 / insmod 临时目录模块"
+    },
+    {
+      "id": "WS-JAVA-AGENT-MEMSHELL",
+      "family": "webshell-jsp",
+      "languages": [
+        "java",
+        "jsp"
+      ],
+      "strings_any": [
+        "VirtualMachine",
+        "agentmain",
+        "Agent-Class",
+        "loadAgent",
+        "MANIFEST.MF"
+      ],
+      "min_hits": 2,
+      "weight": 50,
+      "description": "Java Agent attach 型内存马"
+    },
+    {
+      "id": "PERS-SSHD-CONFIG-POISON",
+      "family": "persistence-content",
+      "languages": [
+        "config"
+      ],
+      "regex_any": [
+        "AuthorizedKeysFile[^\\n]*(?:/tmp|/dev/shm|/var/tmp|\\.)",
+        "^\\s*PermitRootLogin\\s+yes"
+      ],
+      "min_hits": 1,
+      "weight": 40,
+      "path_boost_prefixes": [
+        "/tmp/",
+        "/var/tmp/",
+        "/dev/shm/"
+      ],
+      "description": "sshd_config 投毒（授权文件指向非常规路径）"
+    },
+    {
+      "id": "RK-EBPF",
+      "family": "rootkit",
+      "languages": [],
+      "strings_any": [
+        "boopkit",
+        "bpf_tc_attach",
+        "bpf_program__attach",
+        "sk_lookup",
+        "BPF_PROG_TYPE",
+        "libbpf"
+      ],
+      "min_hits": 2,
+      "weight": 50,
+      "description": "eBPF 后门特征（boopkit 等）"
+    },
+    {
+      "id": "C2-IRC-BOT",
+      "family": "c2-framework",
+      "languages": [],
+      "regex_any": [
+        "PRIVMSG\\s+#\\w+"
+      ],
+      "strings_any": [
+        "NICK ",
+        "TSUNAMI",
+        "kaiten"
+      ],
+      "min_hits": 2,
+      "weight": 50,
+      "description": "IRC bot C2（Tsunami/Kaiten 族）"
+    },
+    {
+      "id": "C2-DNS-TUNNEL",
+      "family": "c2-framework",
+      "languages": [],
+      "strings_any": [
+        "dnscat2",
+        "dnscat",
+        "dns2tcp",
+        "icmptunnel",
+        "ptunnel"
+      ],
+      "min_hits": 1,
+      "weight": 50,
+      "description": "DNS/ICMP 隧道工具标识"
+    },
+    {
+      "id": "C2-MYTHIC",
+      "family": "c2-framework",
+      "languages": [],
+      "strings_any": [
+        "mythic",
+        "apfell",
+        "poseidon"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "Mythic/Apfell/Poseidon C2 特征"
+    },
+    {
+      "id": "PROXY-LIGOLO",
+      "family": "proxy-tool",
+      "languages": [],
+      "strings_any": [
+        "ligolo",
+        "ligolo-ng"
+      ],
+      "regex_any": [
+        "ligolo[^\\n]{0,40}(?:proxy|agent|selfcert)"
+      ],
+      "min_hits": 1,
+      "weight": 50,
+      "description": "ligolo-ng 隧道代理"
+    },
+    {
+      "id": "PERS-INETD-BIND",
+      "family": "persistence-content",
+      "languages": [
+        "config"
+      ],
+      "regex_any": [
+        "nowait\\s+(?:root|nobody)[^\\n]{0,80}/(?:bin/)?(?:ba)?sh",
+        "stream\\s+tcp\\s+nowait[^\\n]{0,80}(?:bin/)?(?:ba)?sh"
+      ],
+      "min_hits": 1,
+      "weight": 55,
+      "description": "inetd/xinetd bind shell 后门"
+    },
+    {
+      "id": "WS-BEHINDER-GODZILLA-JAVA",
+      "family": "webshell-jsp",
+      "languages": [
+        "java",
+        "jsp"
+      ],
+      "strings_any": [
+        "behinder",
+        "godzilla"
+      ],
+      "regex_any": [
+        "session\\.setAttribute[^\\n]{0,60}(?:value|payload|results)"
+      ],
+      "min_hits": 2,
+      "weight": 50,
+      "description": "冰蝎/哥斯拉 Java 标识组合"
+    },
+    {
+      "id": "PERS-SSH-RC",
+      "family": "persistence-content",
+      "languages": [
+        "shell"
+      ],
+      "path_boost_prefixes": [
+        "/home/",
+        "/root/"
+      ],
+      "regex_any": [
+        "(?:^|\\n)\\s*(?:exec\\s+)?[^\\n]{0,40}/dev/tcp/",
+        "(?:^|\\n)\\s*(?:exec\\s+)?[^\\n]{0,40}base64\\s+-d\\s*\\|?",
+        "(?:^|\\n)\\s*(?:exec\\s+)?[^\\n]{0,30}(?:curl|wget)[^\\n]{0,100}\\|\\s*(?:ba|z)?sh\\b"
+      ],
+      "min_hits": 1,
+      "weight": 50,
+      "description": "~/.ssh/rc、.ssh/environment 投毒（反弹/解码执行/管道shell）"
+    },
+    {
+      "id": "PERS-CRON-REBOOT",
+      "family": "persistence-content",
+      "languages": [
+        "config"
+      ],
+      "regex_any": [
+        "@reboot[^\\n]{0,140}(?:curl|wget|python|perl|base64)"
+      ],
+      "min_hits": 1,
+      "weight": 50,
+      "description": "cron @reboot 重启持久化"
+    },
+    {
+      "id": "AF-RANSOM-ERASE",
+      "family": "anti-forensics",
+      "languages": [],
+      "strings_any": [
+        "RESTORE_FILES",
+        "README_FOR_DECRYPT",
+        "YOUR_FILES_ARE_ENCRYPTED"
+      ],
+      "regex_any": [
+        "find\\s+\\S+\\s+-name\\s+['\"]\\*['\"][^\\n]{0,60}(?:shred|openssl|rm -f)"
+      ],
+      "min_hits": 2,
+      "weight": 55,
+      "description": "勒索/擦除行为弱信号"
+    }
+  ],
+  "fp_guards": {
+    "rule_ids": {
+      "WS-PHP-INPUT-EXEC": {
+        "strings_any": [
+          "wp-admin/",
+          "wp-includes/",
+          "wp-content/plugins/",
+          "phpMyAdmin",
+          "Symfony\\Component",
+          "Illuminate\\",
+          "vendor/autoload",
+          "GuzzleHttp",
+          "PEAR.php",
+          "phpunit",
+          "PHPUnit_"
+        ],
+        "regex_any": [
+          "this script requires PHP \\(?>=",
+          "dompdf",
+          "laravel",
+          "/\\*!\\s+PHPMailer"
+        ]
+      },
+      "WS-PHP-VARFUNC": {
+        "strings_any": [
+          "wp-includes/",
+          "vendor/autoload",
+          "PHPUnit_",
+          "phpunit",
+          "Symfony\\Component"
+        ]
+      },
+      "WS-PHP-DECODE-CHAIN": {
+        "strings_any": [
+          "wp-includes/",
+          "phpunit",
+          "PHPUnit_",
+          "vendor/autoload"
+        ]
+      },
+      "WS-PHP-INPUT-DATACONV": {
+        "strings_any": [
+          "wp-includes/",
+          "vendor/autoload",
+          "phpunit"
+        ]
+      },
+      "WS-PY-INPUT-EXEC": {
+        "strings_any": [
+          "flask_admin",
+          "django.contrib",
+          "celery",
+          "alembic",
+          "pytest",
+          "sphinx"
+        ]
+      },
+      "AF-ANTI-FORENSICS": {
+        "regex_any": [
+          "HISTSIZE=\\d+\\s*$",
+          "readonly\\s+HISTFILE"
+        ]
+      }
+    },
+    "global_strings_any": [],
+    "global_regex_any": []
+  },
+  "binary_rules": [
+    {
+      "id": "BIN-UPX-PACKED",
+      "family": "packed",
+      "magic_any": [
+        "UPX!"
+      ],
+      "strings_any": [
+        "UPX!",
+        "$Info: This file is packed with the UPX",
+        "UPX0",
+        "UPX1",
+        "UPX2"
+      ],
+      "min_hits": 1,
+      "weight": 40,
+      "description": "UPX 加壳"
+    },
+    {
+      "id": "BIN-MINER-STRINGS",
+      "family": "miner",
+      "strings_any": [
+        "stratum+tcp",
+        "stratum+ssl",
+        "donate-level",
+        "cryptonight",
+        "randomx",
+        "xmrig",
+        "kdevtmpfsi",
+        "kinsing"
+      ],
+      "min_hits": 2,
+      "weight": 65,
+      "description": "ELF 内挖矿特征串"
+    },
+    {
+      "id": "BIN-PROXY-EW",
+      "family": "proxy-tool",
+      "strings_any": [
+        "ssocksd",
+        "rssocks",
+        "lcx_slave",
+        "lcx_tran",
+        "lcx_listen",
+        "rcsocks"
+      ],
+      "min_hits": 1,
+      "weight": 65,
+      "description": "EW 代理工具 ELF 特征"
+    },
+    {
+      "id": "BIN-PROXY-GSOCKET",
+      "family": "proxy-tool",
+      "strings_any": [
+        "gs-netcat",
+        "GSRN",
+        "GSOCKET_SECRET"
+      ],
+      "min_hits": 1,
+      "weight": 60,
+      "description": "gsocket ELF 特征"
+    },
+    {
+      "id": "BIN-PROXY-FRP",
+      "family": "proxy-tool",
+      "strings_any": [
+        "frpc",
+        "frps",
+        "frp proxy",
+        "server_addr",
+        "[[proxies]]",
+        "proxy_protocol_v2"
+      ],
+      "min_hits": 2,
+      "weight": 55,
+      "not_package_owned": true,
+      "description": "frp 代理 ELF 特征（需 ≥2 个特异性串，排除库文件子串误报）"
+    },
+    {
+      "id": "BIN-C2-METERPRETER",
+      "family": "c2-framework",
+      "strings_any": [
+        "meterpreter",
+        "reverse_tcp",
+        "msfvenom"
+      ],
+      "min_hits": 1,
+      "weight": 60,
+      "description": "meterpreter 载荷 ELF 特征"
+    },
+    {
+      "id": "BIN-REVERSE-SHELL-SYSCALLS",
+      "family": "reverse-shell",
+      "imports_all": [
+        "socket",
+        "connect",
+        "dup2",
+        "execve"
+      ],
+      "min_hits": 1,
+      "weight": 45,
+      "not_package_owned": true,
+      "description": "非包管理 ELF 的 socket+connect+dup2+execve 反弹 shell 组合（bash 等内置 /dev/tcp 的系统 shell 由包归属排除）"
+    },
+    {
+      "id": "BIN-MEMFD-LOADER",
+      "family": "loader",
+      "imports_any": [
+        "memfd_create"
+      ],
+      "strings_any": [
+        "memfd:",
+        "/proc/self/fd/"
+      ],
+      "min_hits": 2,
+      "weight": 50,
+      "not_package_owned": true,
+      "description": "memfd 无文件加载器组合"
+    },
+    {
+      "id": "BIN-INJECTION-COMBO",
+      "family": "loader",
+      "imports_any": [
+        "ptrace",
+        "process_vm_writev",
+        "process_vm_readv",
+        "mmap"
+      ],
+      "imports_all": [
+        "mprotect"
+      ],
+      "min_hits": 3,
+      "weight": 45,
+      "not_package_owned": true,
+      "description": "非包管理 ELF 注入/自加载组合"
+    },
+    {
+      "id": "BIN-PACKED-ENTROPY-IMPORTS",
+      "family": "packed",
+      "min_entropy": 7.2,
+      "max_imports": 8,
+      "min_hits": 1,
+      "weight": 40,
+      "not_package_owned": true,
+      "description": "高熵+导入表极小（加壳/自解密嫌疑，非包管理路径）"
+    },
+    {
+      "id": "BIN-UNSAFE-LOCATION",
+      "family": "runtime-anomaly",
+      "path_prefixes": [
+        "/tmp/",
+        "/var/tmp/",
+        "/dev/shm/",
+        "/run/",
+        "/var/run/"
+      ],
+      "min_hits": 1,
+      "weight": 25,
+      "description": "临时目录可执行文件"
+    },
+    {
+      "id": "BIN-RWX-SEGMENT",
+      "family": "packed",
+      "rwx_segment": true,
+      "min_hits": 1,
+      "weight": 30,
+      "not_package_owned": true,
+      "description": "RWX 可写可执行段"
+    },
+    {
+      "id": "BIN-STRIPTED-SUSPICIOUS",
+      "family": "runtime-anomaly",
+      "no_sections": true,
+      "min_hits": 1,
+      "weight": 25,
+      "not_package_owned": true,
+      "description": "节表剥离（sstrip/手工处理）非包管理 ELF"
+    },
+    {
+      "id": "BIN-KERNEL-MODULE-SUSPICIOUS",
+      "family": "rootkit",
+      "strings_any": [
+        "diamorphine",
+        "hide_pid",
+        "module_hide",
+        "libprocesshider",
+        "reptile_rootkit"
+      ],
+      "min_hits": 1,
+      "weight": 60,
+      "description": "可疑内核模块（非包管理路径）"
+    },
+    {
+      "id": "BIN-EBPF-BACKDOOR",
+      "family": "rootkit",
+      "strings_any": [
+        "boopkit",
+        "bpf_tc_attach",
+        "bpf_program__attach",
+        "sk_lookup"
+      ],
+      "min_hits": 2,
+      "weight": 50,
+      "not_package_owned": true,
+      "description": "eBPF 后门 ELF 特征"
+    },
+    {
+      "id": "BIN-DNS-TUNNEL",
+      "family": "c2-framework",
+      "strings_any": [
+        "dnscat2",
+        "dns2tcp",
+        "icmptunnel"
+      ],
+      "min_hits": 1,
+      "weight": 50,
+      "description": "DNS/ICMP 隧道 ELF 特征"
+    },
+    {
+      "id": "BIN-LIGOLO",
+      "family": "proxy-tool",
+      "strings_any": [
+        "ligolo",
+        "ligolo-ng"
+      ],
+      "min_hits": 1,
+      "weight": 50,
+      "description": "ligolo-ng ELF 特征"
+    },
+    {
+      "id": "BIN-MYTHIC-C2",
+      "family": "c2-framework",
+      "strings_any": [
+        "mythic",
+        "apfell",
+        "poseidon"
+      ],
+      "min_hits": 2,
+      "weight": 45,
+      "description": "Mythic 族 ELF 特征"
+    }
+  ],
+  "family_display": {
+    "reverse-shell": "反弹Shell",
+    "webshell-php": "PHP WebShell",
+    "webshell-jsp": "JSP/Java WebShell",
+    "webshell-asp": "ASP/ASPX WebShell",
+    "webshell-node": "Node.js WebShell",
+    "webshell-python": "Python WebShell",
+    "miner": "挖矿木马",
+    "proxy-tool": "代理/隧道工具",
+    "c2-framework": "C2 框架载荷",
+    "kernel-exploit": "内核提权利用",
+    "recon-tool": "侦察/提权辅助工具",
+    "rootkit": "Rootkit",
+    "anti-forensics": "反取证行为",
+    "persistence-content": "持久化投毒内容",
+    "loader": "载荷加载器",
+    "packed": "加壳/混淆二进制",
+    "runtime-anomaly": "运行时异常",
+    "attack-tool": "攻击工具"
+  }
+}

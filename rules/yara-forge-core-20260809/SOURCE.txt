@@ -1,6 +1,0 @@
-YARA Forge Core
-Release: 20260809
-Project: https://github.com/YARAHQ/yara-forge
-Archive: yara-forge-rules-core.zip
-Archive SHA-256: eecc7fd4775b64329469858a09ddfd70dc908f86e090f3b4eb90ac0231e55fbe
-Rule SHA-256: e393a630cccc5e8e0915dfd6ec266cee182a83c371dae2965a66912640c19d95

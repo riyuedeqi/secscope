@@ -5,7 +5,6 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 [[ "$(uname -s)" == Linux ]] || { printf 'SKIP: Linux runtime collector required\n'; exit 0; }
 
 SCANNER="$ROOT/native/secscope-scanner/scanner"
-make -C "$ROOT/native/secscope-scanner" -j2 >/dev/null
 fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT
 

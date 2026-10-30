@@ -39,17 +39,13 @@ function_body=$(declare -f run_incremental_file_monitoring)
 [[ "$function_body" == *'runtime_exe_candidates'* ]] || exit 1
 [[ "$function_body" == *'runtime_mapped_candidates'* ]] || exit 1
 declare -f append_runtime_binary_candidates | grep -q 'changed-static-candidates.txt' || exit 1
-declare -f scan_yara_candidates | grep -q 'SECONDS - started' || exit 1
 static_body=$(declare -f scan_web_static_structures)
-[[ "$static_body" == *'STATIC_PIPELINE_DEADLINE=$((SECONDS + YARA_TOTAL_TIMEOUT))'* ]] || exit 1
+[[ "$static_body" == *'STATIC_PIPELINE_DEADLINE=$((SECONDS + STATIC_TOTAL_TIMEOUT))'* ]] || exit 1
 logs_body=$(declare -f collect_realtime_events)
 [[ "$logs_body" != *'EVENT_WINDOW_MINUTES + 90'* ]] || exit 1
 [[ "$logs_body" == *'event_parse_timeout=300'* ]] || exit 1
 declare -f process_package_and_integrity | grep -q 'PACKAGE_VERIFY_CACHE_FILE' || exit 1
 declare -f check_filesystem | grep -q 'STATIC_CANDIDATE_STATUS' || exit 1
-declare -f scan_yara_candidates | grep -q -- '"$source" --scan-list "$selected"' || exit 1
-declare -f scan_yara_candidates | grep -q -- 'compile -w -o "$compiled" "$source"' || exit 1
-declare -f scan_yara_candidates | grep -q -- 'scan -C --output-format=ndjson' || exit 1
 
 # Multiple executables owned by one package must share one package verifier
 # invocation while retaining path-specific mismatch results.

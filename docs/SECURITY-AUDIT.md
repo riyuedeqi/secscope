@@ -15,7 +15,6 @@
 
 ## 历史演进中保留并复核的关键修复
 
-- YARA 在文件扫描前由 `modules/yara.sh` 的 `initialize_yara_capability` 初始化，`scan_yara_candidates` 对独立候选执行 YARA-X/经典 YARA，并保留时间、文件数和错误状态；主控在全部上下文采集完成后调用 `promote_yara_findings`。
 - Web 链由 `secscope.sh:3954 correlate_web_attack_chain` 使用稳定实体和有界时窗；无 PID 的 HTTP 记录仍只是上下文。
 - `secscope.sh:3638 collect_socket_snapshot_once` 每轮只采集一次 `ss`；`secscope.sh:5046 normalize_audit_events` 按 serial 重组 audit；`secscope.sh:5003 normalize_falco_events` 保留 JSON 字段。
 - `secscope.sh:5308 collect_native_memory_mappings` 和 `:5345 collect_ebpf_kernel_inventory` 保留 memfd/deleted/RX-RWX/eBPF/内核模块有界可见性，不用户态结果排除 Rootkit。
@@ -24,5 +23,5 @@
 
 - helper 只读字节和 Mock/JSON 事件，不执行、import、attach、解密执行或加载未知样本。
 - 不抓包，不主动 DNS，不发起 HTTP，不上传文件、哈希、日志、内存或状态。
-- 不杀进程、删文件、修改业务配置或安装 auditd/Falco/YARA/bpftool。
+- 不杀进程、删文件、修改业务配置或安装 auditd/Falco/bpftool。
 - Gh0st RAT、PlugX 等名称只能在多域结构与本地 IOC 同时支持时作为 `family_hypotheses`，不作无样本确认。

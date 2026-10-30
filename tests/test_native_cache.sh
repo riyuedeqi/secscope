@@ -2,10 +2,9 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 if [[ "$(uname -s)" != Linux ]]; then
-  test -f "$ROOT/native/secscope-cache/CMakeLists.txt"
+  test -f "$ROOT/native/secscope-cache/secscope_cache/daemon_main.py"
   exit 0
 fi
-make -C "$ROOT/native/secscope-cache" -j2 >/dev/null
 fixture=$(mktemp -d)
 trap 'kill "${daemon_pid:-0}" 2>/dev/null || true; rm -rf "$fixture"' EXIT
 mkdir -p "$fixture/run" "$fixture/data"

@@ -3,7 +3,7 @@
 
 The router does not assign a malware verdict. It reads only a small prefix and
 separates candidates by analyzer applicability so expensive parsers do not all
-process the same undifferentiated list. YARA retains every readable regular
+process the same undifferentiated list. The router classifies every readable regular
 candidate as the high-recall fallback lane.
 """
 import argparse
@@ -82,7 +82,7 @@ def classify(path, data):
         reasons.append("web_extension")
     if web and not reasons:
         reasons.append("textual_fallback")
-    return web, binary, reasons or ["yara_only_unknown_type"]
+    return web, binary, reasons or ["unknown_type"]
 
 
 def write_lines(path, values):
@@ -96,7 +96,6 @@ def main():
     parser.add_argument("--input-list", required=True)
     parser.add_argument("--web-output", required=True)
     parser.add_argument("--binary-output", required=True)
-    parser.add_argument("--yara-output", required=True)
     parser.add_argument("--summary", required=True)
     parser.add_argument("--max-probe-bytes", type=int, default=8192)
     args = parser.parse_args()
@@ -104,7 +103,6 @@ def main():
 
     web_candidates = []
     binary_candidates = []
-    yara_candidates = []
     reason_counts = {}
     errors = []
     error_count = 0
@@ -118,7 +116,6 @@ def main():
             try:
                 data = read_prefix(path, probe_limit)
                 web, binary, reasons = classify(path, data)
-                yara_candidates.append(path)
                 if web:
                     web_candidates.append(path)
                 if binary:
@@ -134,17 +131,14 @@ def main():
 
     write_lines(args.web_output, web_candidates)
     write_lines(args.binary_output, binary_candidates)
-    write_lines(args.yara_output, yara_candidates)
     summary = {
         "schema_version": 1,
         "router": "secscope-static-l1-router",
         "router_version": VERSION,
         "status": "PARTIAL" if error_count else "SUCCESS",
         "input_candidates": len(seen),
-        "readable_candidates": len(yara_candidates),
         "web_candidates": len(web_candidates),
         "binary_candidates": len(binary_candidates),
-        "yara_candidates": len(yara_candidates),
         "unreadable_or_unstable": error_count,
         "probe_bytes": probe_limit,
         "reason_counts": reason_counts,

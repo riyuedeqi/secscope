@@ -17,7 +17,8 @@ import time
 
 CODE = {".php", ".phtml", ".phar", ".jsp", ".jspx", ".asp", ".aspx", ".ashx",
         ".asmx", ".cs", ".vb", ".java", ".class", ".js", ".mjs", ".cjs", ".py",
-        ".pl", ".rb", ".ps1", ".config", ".htaccess"}
+        ".pl", ".rb", ".ps1", ".config", ".htaccess", ".sh", ".bash", ".zsh",
+        ".ksh", ".command", ".toml", ".service", ".timer", ".cron", ".cgi", ".pm"}
 ARCHIVE = {".jar", ".war", ".ear", ".zip", ".tar", ".tgz", ".gz", ".nupkg"}
 BINARY = {".exe", ".dll", ".sys", ".scr", ".com", ".cpl", ".ocx", ".drv",
           ".so", ".ko", ".elf", ".bin", ".run"}

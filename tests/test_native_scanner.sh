@@ -3,12 +3,11 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SCANNER="$ROOT/native/secscope-scanner/scanner"
 if [[ "$(uname -s)" == Linux ]]; then
-  make -C "$ROOT/native/secscope-scanner" -j2 >/dev/null
   "$SCANNER" capabilities | grep -q '"protocol_version":2'
   "$SCANNER" self-test
 else
-  test -f "$ROOT/native/secscope-scanner/CMakeLists.txt"
-  test -f "$ROOT/native/secscope-scanner/Makefile"
+  test -f "$ROOT/native/secscope-scanner/secscope_scanner/scanner_main.py"
+  test -f "$ROOT/native/secscope-scanner/secscope_scanner/native_io.py"
 fi
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
@@ -116,5 +115,116 @@ PY
   "$SCANNER" analyze-binary --input-list "$fixture/binary-input.list" --output-jsonl "$fixture/binary-output.jsonl" --max-files 1 --max-bytes 1048576 --timeout-seconds 10 > "$fixture/binary-summary.json"
   grep -q '"format":"ELF"' "$fixture/binary-output.jsonl"
   grep -q '"scanned":1' "$fixture/binary-summary.json"
+
+  # Minimal 64-bit ELF: one PT_LOAD with RWX flags plus reverse-shell style
+  # strings; exercises program-header anomalies and the restored combos.
+  python3 - "$fixture/rwx-shell.elf" <<'PY'
+import pathlib
+import struct
+import sys
+
+path = pathlib.Path(sys.argv[1])
+ehdr = bytearray(64)
+ehdr[:6] = b"\x7fELF\x02\x01"
+struct.pack_into("<HHI", ehdr, 16, 2, 0x3e, 1)      # type, machine, version
+struct.pack_into("<Q", ehdr, 24, 0)                  # entry
+struct.pack_into("<Q", ehdr, 32, 64)                 # phoff
+struct.pack_into("<Q", ehdr, 40, 0)                  # shoff (none)
+struct.pack_into("<HHHHHH", ehdr, 52, 64, 56, 1, 64, 0, 0)  # ehsize, phentsize, phnum, shentsize, shnum, shstrndx
+phdr = bytearray(56)
+struct.pack_into("<II", phdr, 0, 1, 7)               # PT_LOAD, flags RWX
+strings = b"socket\x00connect\x00dup2_here\x00beacon_marker\x00"
+path.write_bytes(bytes(ehdr) + bytes(phdr) + strings)
+PY
+  printf '%s\n' "$fixture/rwx-shell.elf" > "$fixture/rwx-input.list"
+  "$SCANNER" analyze-binary --input-list "$fixture/rwx-input.list" --output-jsonl "$fixture/rwx-output.jsonl" --max-files 1 --max-bytes 1048576 --timeout-seconds 10 > "$fixture/rwx-summary.json"
+  grep -q '"format":"ELF"' "$fixture/rwx-output.jsonl"
+  grep -q '"rwx_load_segment"' "$fixture/rwx-output.jsonl"
+  grep -q '"writable_executable_segment"' "$fixture/rwx-output.jsonl"
+  grep -q '"stripped_or_static_linked"' "$fixture/rwx-output.jsonl"
+  grep -q '"reverse_connection_shell"' "$fixture/rwx-output.jsonl"
+  grep -q '"elf_behavior_configuration"' "$fixture/rwx-output.jsonl"
+  grep -q '"program_header_count":1' "$fixture/rwx-output.jsonl"
+
+  # Full-width homoglyph eval is only detectable after NFKC normalization.
+  python3 - "$fixture/nfkc-shell.php" <<'PY'
+import pathlib
+import sys
+pathlib.Path(sys.argv[1]).write_text(
+    "<?php \uff45\uff56\uff41\uff4c(base64_decode($_POST[\"x\"])); ?>\n",
+    encoding="utf-8")
+PY
+  printf '%s\n' "$fixture/nfkc-shell.php" > "$fixture/nfkc-input.list"
+  "$SCANNER" analyze-static --input-list "$fixture/nfkc-input.list" \
+      --output-jsonl "$fixture/nfkc-output.jsonl" --max-files 1 --timeout-seconds 20 >/dev/null
+  grep -q '"classification":"HIGH_RISK_STRUCTURE"' "$fixture/nfkc-output.jsonl"
+  grep -q '"dynamic_code"' "$fixture/nfkc-output.jsonl"
+
+  # Analysis caches: unchanged files replay previous rows byte-identically;
+  # modified files fall out of the cache and are re-analyzed.
+  printf '<?php system($_GET["c"]); ?>\n' > "$fixture/cache-a.php"
+  printf '%s\n' "$fixture/cache-a.php" > "$fixture/cache-input.list"
+  "$SCANNER" analyze-static --input-list "$fixture/cache-input.list" \
+      --output-jsonl "$fixture/cache-r1.jsonl" --max-files 2 --timeout-seconds 20 \
+      --analysis-cache-out "$fixture/static.cache" >/dev/null
+  "$SCANNER" analyze-static --input-list "$fixture/cache-input.list" \
+      --output-jsonl "$fixture/cache-r2.jsonl" --max-files 2 --timeout-seconds 20 \
+      --analysis-baseline "$fixture/static.cache" --analysis-cache-out "$fixture/static.cache" \
+      > "$fixture/cache-sum2.json"
+  grep -q '"cache_reused":1' "$fixture/cache-sum2.json"
+  [ "$(head -1 "$fixture/cache-r1.jsonl")" = "$(head -1 "$fixture/cache-r2.jsonl")" ]
+  printf '<?php echo "changed"; ?>\n' > "$fixture/cache-a.php"
+  "$SCANNER" analyze-static --input-list "$fixture/cache-input.list" \
+      --output-jsonl "$fixture/cache-r3.jsonl" --max-files 2 --timeout-seconds 20 \
+      --analysis-baseline "$fixture/static.cache" --analysis-cache-out "$fixture/static.cache" \
+      > "$fixture/cache-sum3.json"
+  grep -q '"cache_reused":0' "$fixture/cache-sum3.json"
+
+  # Binary analyzer: result cache replay and digest-index reuse.
+  "$SCANNER" analyze-binary --input-list "$fixture/rwx-input.list" \
+      --output-jsonl "$fixture/bcache-r1.jsonl" --max-files 2 --timeout-seconds 20 \
+      --analysis-cache-out "$fixture/binary.cache" >/dev/null
+  "$SCANNER" analyze-binary --input-list "$fixture/rwx-input.list" \
+      --output-jsonl "$fixture/bcache-r2.jsonl" --max-files 2 --timeout-seconds 20 \
+      --analysis-baseline "$fixture/binary.cache" --analysis-cache-out "$fixture/binary.cache" \
+      >/dev/null
+  tail -1 "$fixture/bcache-r2.jsonl" | grep -q '"cache_reused":1'
+  [ "$(head -1 "$fixture/bcache-r1.jsonl")" = "$(head -1 "$fixture/bcache-r2.jsonl")" ]
+  python3 - "$fixture/rwx-shell.elf" "$fixture/fake-digest-index.tsv" <<'PY'
+import os, sys
+target, index = sys.argv[1], sys.argv[2]
+st = os.lstat(target)
+with open(index, "w") as handle:
+    handle.write("%d\t%d\t%d\t%d\t%d\t%s\t%s\n" % (
+        st.st_dev, st.st_ino, max(st.st_size, 0), int(st.st_mtime), int(st.st_ctime),
+        "f4ke" * 8, "f4ke" * 16))
+PY
+  "$SCANNER" analyze-binary --input-list "$fixture/rwx-input.list" \
+      --output-jsonl "$fixture/bhash-r1.jsonl" --max-files 2 --timeout-seconds 20 \
+      --hash-index "$fixture/fake-digest-index.tsv" >/dev/null
+  grep -q "\"sha256\":\"f4kef4ke" "$fixture/bhash-r1.jsonl"
+
+  mkdir -p "$fixture/monroot/bin"
+  printf '#!/bin/sh\n' > "$fixture/monroot/bin/tool.run"
+  chmod 700 "$fixture/monroot/bin/tool.run"
+  printf 'plain\n' > "$fixture/monroot/notes.txt"
+  printf 'skipped\n' > "$fixture/monroot/excluded.txt"
+  printf '%s\n' "$fixture/monroot" > "$fixture/mon-roots.txt"
+  "$SCANNER" priority-candidates --roots-file "$fixture/mon-roots.txt" \
+      --output-list "$fixture/mon-priority.tsv" --max-depth 4 \
+      --timeout-seconds 20 --exclude-prefix "$fixture/monroot/excluded.txt" \
+      > "$fixture/mon-summary.json"
+  grep -q '"status":"SUCCESS"' "$fixture/mon-summary.json"
+  [ "$(awk -F '\t' 'END {print NR}' "$fixture/mon-priority.tsv")" -eq 1 ]
+  awk -F '\t' 'NR == 1 { exit !($4 ~ /tool.run$/ && $5 ~ /SUSPICIOUS_EXTENSION/ && $5 ~ /RECENT/) }' "$fixture/mon-priority.tsv"
+
+  printf '100\t0\t12\t%s\tDEFAULT\n' "$fixture/monroot/bin/tool.run" > "$fixture/mon-hash-input.tsv"
+  "$SCANNER" hash-files --input-list "$fixture/mon-hash-input.tsv" \
+      --output "$fixture/mon-hash.tsv" --max-files 5 --max-bytes 1048576 \
+      --timeout-seconds 20 --hash-index-out "$fixture/mon-hash-index.tsv" \
+      > "$fixture/mon-hash-summary.json"
+  grep -q '"hash_computed":1' "$fixture/mon-hash-summary.json"
+  [ "$(awk -F '\t' 'END {print NR}' "$fixture/mon-hash-index.tsv")" -eq 1 ]
+  awk -F '\t' 'NR == 1 { exit !(length($6) == 32 && length($7) == 64) }' "$fixture/mon-hash-index.tsv"
 fi
 printf 'native scanner contract test passed\n'

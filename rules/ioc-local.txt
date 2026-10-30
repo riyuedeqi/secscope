@@ -1,2 +1,24 @@
 # SecScope 本地恶意 IOC（严格离线）
-# 每行一个 IP、IP:端口或域名。空文件表示本地情报不可用，不表示安全。
+# 每行一个 IP、IP:端口或域名。# 为注释。
+# 用于 RAT 证据图威胁情报通道（threat_intel.py）：外连目的地命中即加分。
+#
+# 内置条目为公开威胁情报中长期活跃的挖矿池/已知恶意基础设施域名样本，
+# 作为开箱基线；组织应追加自有情报（一线设备/蜜罐/溯源确认的 C2）。
+# 命中不单独定性，仅作为 RAT 引擎 +40 分强证据参与多源门禁。
+
+# ---- 挖矿池（stratum 池域，红队挖矿木马常用） ----
+pool.minexmr.com
+pool.hashvault.pro
+supportxmr.com
+xmr.pool.minergate.com
+xmr-eu1.nanopool.org
+xmr-us-west1.nanopool.org
+xmrpool.eu
+monerohash.com
+f2pool.com
+antpool.com
+eu.luxor.tech
+pool.nerdminer.de
+2miners.com
+herominers.com
+# 组织自有情报追加区（一行一个 IP / IP:端口 / 域名）：

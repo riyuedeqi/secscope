@@ -60,9 +60,9 @@ def main():
             "median_work": {
                 key: median([item.get("work", {}).get(key) for item in items])
                 for key in ("files_traversed", "stat_calls", "hash_computed", "hash_reused", "hash_failed",
-                            "yara_scanned", "yara_rules", "proc_pid_visits", "proc_maps_visits",
+                            "proc_pid_visits", "proc_maps_visits",
                             "socket_snapshots", "fallback_count", "raw_file_count", "static_input_candidates",
-                            "static_web_candidates", "static_binary_candidates", "static_yara_candidates",
+                            "static_web_candidates", "static_binary_candidates",
                             "static_route_unreadable")
             },
             "median_stages_seconds": stages,

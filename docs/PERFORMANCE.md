@@ -75,4 +75,4 @@ Ubuntu 24.04 VM（Bash 5.2）专项结果：`tests/test_scan_optimization.sh` �
 | daily-hunt | 523.72 s | 466.03 s | 278.03 / 189.43 s | 92,532 KiB |
 | full（单轮） | 3595.94 s | 未测 | 2014.28 / 1394.39 s | 108,440 KiB |
 
-当前 native scanner/cache 已完成 Linux 编译、自测和小型 fixture runtime 验证；尚未切换正式报告路径，也未伪造加速结论。
+native scanner/cache 现为纯 Python 实现（免编译），已完成自测与 fixture 契约验证；协议与输出契约和原 C++ 实现保持一致。

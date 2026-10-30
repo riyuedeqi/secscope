@@ -108,8 +108,6 @@ def main():
             "hash_computed": counters.get("hash_computed", 0),
             "hash_reused": counters.get("hash_reused", 0),
             "hash_failed": counters.get("hash_failed", 0),
-            "yara_scanned": counters.get("yara_scanned", 0),
-            "yara_rules": counters.get("yara_rules", 0),
             "proc_pid_visits": counters.get("proc_pid_visits", 0),
             "proc_maps_visits": counters.get("proc_maps_visits", 0),
             "socket_snapshots": counters.get("socket_snapshots", 0),
@@ -118,14 +116,12 @@ def main():
             "static_input_candidates": routing.get("input_candidates", 0),
             "static_web_candidates": routing.get("web_candidates", 0),
             "static_binary_candidates": routing.get("binary_candidates", 0),
-            "static_yara_candidates": routing.get("yara_candidates", 0),
             "static_route_unreadable": routing.get("unreadable_or_unstable", 0),
         },
         "scan": {
             "coverage_percent": status.get("coverage_percent"),
             "finding_count": status.get("finding_count"),
             "file_monitoring": status.get("file_monitoring", {}),
-            "yara": status.get("yara", {}),
             "modules": status.get("modules", []),
         },
     }

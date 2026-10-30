@@ -18,7 +18,7 @@ def main():
         os.makedirs(raw)
         open(os.path.join(raw, "sample.txt"), "w").write("evidence\n")
         json.dump({"input_candidates": 10, "web_candidates": 6, "binary_candidates": 2,
-                   "yara_candidates": 10, "unreadable_or_unstable": 0},
+                   "unreadable_or_unstable": 0},
                   open(os.path.join(raw, "static-routing-summary.json"), "w"))
         time_file = os.path.join(temp, "time.txt")
         open(time_file, "w").write(
@@ -31,12 +31,12 @@ def main():
             stream.write(json.dumps({"type": "stage", "stage": "inventory", "duration_us": 1250000}) + "\n")
             stream.write(json.dumps({"type": "summary", "files_traversed": 10, "stat_calls": 8,
                                      "hash_computed": 3, "hash_reused": 2, "hash_failed": 0,
-                                     "yara_scanned": 1, "yara_rules": 1, "proc_pid_visits": 4,
+                                     "proc_pid_visits": 4,
                                      "proc_maps_visits": 2, "socket_snapshots": 1,
                                      "fallback_count": 0}) + "\n")
         status_file = os.path.join(report, "status.json")
         json.dump({"coverage_percent": 100, "finding_count": 0, "file_monitoring": {},
-                   "yara": {}, "modules": []}, open(status_file, "w"))
+                   "modules": []}, open(status_file, "w"))
         run_file = os.path.join(runs, "run-fast-hunt-cold-1.json")
         subprocess.check_call([
             sys.executable, os.path.join(ROOT, "helpers", "benchmark_result.py"),
@@ -60,7 +60,6 @@ def main():
         assert summary["median_work"]["files_traversed"] == 10
         assert summary["median_work"]["static_web_candidates"] == 6
         assert summary["median_work"]["static_binary_candidates"] == 2
-        assert summary["median_work"]["static_yara_candidates"] == 10
         assert summary["median_stages_seconds"]["inventory"] == 1.25
         assert summary["process_count"]["process_creations"] == 7
         assert data["runs"][0]["integrity"] == "PASS"

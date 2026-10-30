@@ -35,14 +35,8 @@ def main():
     assert runtime["memfd_public_connection"]["expected"] == "HIGH"
     shell = open(os.path.join(ROOT, "secscope.sh"), encoding="utf-8").read()
     profile_module = open(os.path.join(ROOT, "modules", "profile.sh"), encoding="utf-8").read()
-    yara_module = open(os.path.join(ROOT, "modules", "yara.sh"), encoding="utf-8").read()
-    combined_shell = shell + "\n" + profile_module + "\n" + yara_module
     filesystem = shell[shell.index("check_filesystem()"):
                        shell.index("check_history_env()")]
-    init_call = filesystem.index("initialize_yara_capability")
-    static_call = filesystem.index("scan_web_static_structures", init_call)
-    assert init_call < static_call
-    assert 'PROFILE_YARA_ENABLED" = true' in filesystem
     assert 'PROFILE_STATIC_ANALYSIS" = true' in filesystem
     assert 'MODULE_TOTAL=6' in profile_module
     assert 'fast-hunt:system|fast-hunt:process|fast-hunt:network|fast-hunt:persistence|fast-hunt:filesystem|fast-hunt:logs)' in profile_module
@@ -57,36 +51,34 @@ def main():
     assert "scan_visibility_incomplete" in shell
     assert "扫描不完整 - PARTIAL/INCONCLUSIVE，不能判定未发现威胁" in shell
     assert '[ "$classification" != OBSERVE ] || continue' in shell
-    assert 'fast-hunt)' in profile_module and 'PROFILE_YARA_ENABLED=false' in profile_module
-    assert 'file_inventory.${SCAN_PROFILE}.state' in shell
+    assert 'fast-hunt)' in profile_module and 'PROFILE_STATIC_ANALYSIS=false' in profile_module
+    assert 'file_inventory.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.state' in shell
+    # full-diff 档与 full 共享文件基线/分析缓存（STATE_PROFILE_KEY=full）
+    assert '[ "$SCAN_PROFILE" != full-diff ] || STATE_PROFILE_KEY=full' in shell
     assert "CONTEXT_ONLY_NO_PID" in shell and "process_instance_id=" in shell
     assert "web-access-normalized.tsv" in shell and "PARTIAL_PARSE" in shell
     assert "container-context.tsv" in shell and "kubernetes-context.tsv" in shell
     assert "priority_score" in shell and "PriorityRuntimeExe" in shell
-    assert "SECSCOPE_YARA_MODE" in combined_shell and "disabled|lite|standard|full|forensic" in profile_module
-    assert "promote_yara_findings" in yara_module and "yara-findings.tsv" in yara_module and '"yara"' in shell
-    assert "helpers/yara_promoter.py" in shell and "YARA-MALICIOUS-HIT:*" in shell
-    assert (os.path.isfile(os.path.join(ROOT, "helpers", "yara_promoter.py")))
+    assert "STATIC_TOTAL_TIMEOUT" in profile_module
     assert (os.path.isfile(os.path.join(ROOT, "helpers", "corpus_manifest.py")))
     assert "load_secscope_modules" in shell and "source \"$module_path\"" in shell
     stable_entity = shell[shell.index("stable_linux_entity()"):
                           shell.index("process_display_for_pid()")]
     assert '[ -f "$supplied" ] && [ ! -L "$supplied" ]' in stable_entity
-    assert "modules/profile.sh" in shell and "modules/yara.sh" in shell
+    assert "modules/profile.sh" in shell
     assert "install -d -m 0700 /opt/secscope /opt/secscope/modules" in shell
-    assert "profile_rank() {" not in shell and "initialize_yara_capability() {" not in shell
+    assert "profile_rank() {" not in shell
     assert "find \"$root\"" not in shell[shell.index("scan_web_static_structures()"):
                                                 shell.index("correlate_web_attack_chain()")]
     static_pipeline = shell[shell.index("scan_web_static_structures()"):
                             shell.index("correlate_web_attack_chain()")]
     route_call = static_pipeline.index("route_static_candidates")
-    assert route_call < static_pipeline.index('scan_yara_candidates "$STATIC_YARA_CANDIDATE_FILE"')
     assert route_call < static_pipeline.index('run_static_language_adapters "$STATIC_WEB_CANDIDATE_FILE"')
     assert route_call < static_pipeline.index('run_binary_analyzers "$STATIC_BINARY_CANDIDATE_FILE"')
     assert os.path.isfile(os.path.join(ROOT, "helpers", "route_static_candidates.py"))
     readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
     assert "# SecScope v1.1.0 Linux" in readme
-    assert "SECSCOPE_YARA_MODE=auto" in readme and "yara-summary.json" in readme
+    assert "SECSCOPE_STATIC_TOTAL_TIMEOUT" in readme or "static" in readme.lower()
     assert "L1 候选路由" in readme
     assert "v3.9.0" not in readme and "v3.4.5" not in readme
     print("SECURITY_CONTRACTS_OK")

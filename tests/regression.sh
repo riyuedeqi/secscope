@@ -77,8 +77,8 @@ check expect_type SECURITY_ANOMALY HIGH process 'single weak signal' 'process on
 check expect_type SECURITY_ANOMALY HIGH process 'two domains' 'process and network' review '' TEST-TWO two '' SECURITY_THREAT HIGH two correlate 'PROCESS,NETWORK' none
 check expect_type SECURITY_THREAT HIGH process 'three domains' 'process file network' respond '' TEST-THREE three '' SECURITY_THREAT HIGH three verify 'PROCESS,FILE,NETWORK' none
 check expect_type SECURITY_THREAT CRITICAL reverseshell 'direct behavior' 'socket stdio' respond '' REV-SOCKET-STDIO direct '' SECURITY_THREAT HIGH direct verify 'PROCESS,NETWORK' none
-check expect_type SECURITY_THREAT HIGH filesystem 'high-confidence yara meta' 'YARA rule hit' respond '' YARA-MALICIOUS-HIT:default:fixture yara-file '' SECURITY_THREAT HIGH direct verify 'FILE,INTEGRITY' none
-check expect_type SECURITY_ANOMALY MEDIUM filesystem 'low-confidence yara meta' 'YARA rule hit' review '' YARA-MALICIOUS-HIT:default:fixture-low yara-file-low '' SECURITY_ANOMALY LOW ambiguous correlate 'FILE,INTEGRITY' none
+check expect_type SECURITY_THREAT HIGH filesystem 'high-confidence meta' 'direct rule hit' respond '' REV-SOCKET-STDIO rev-file '' SECURITY_THREAT HIGH direct verify 'FILE,NETWORK' none
+check expect_type SECURITY_ANOMALY MEDIUM filesystem 'low-confidence meta' 'unknown rule hit' review '' FIXTURE-LOW:default:fixture-low rev-file-low '' SECURITY_ANOMALY LOW ambiguous correlate 'FILE,INTEGRITY' none
 
 printf 'one\n' > "$tmp/entity.bin"
 entity_one=$(stable_linux_entity "$tmp/entity.bin" '')
@@ -118,8 +118,7 @@ if [ "$failures" -ne 0 ]; then
 fi
 printf '[OK] %s regression cases passed\n' "$case_no"
 bash "$ROOT/tests/test_module_loading.sh"
-bash "$ROOT/tests/test_yara_promotion.sh"
-bash "$ROOT/tests/test_yara_rule_discovery.sh"
+bash "$ROOT/tests/test_yara_diff.sh"
 bash "$ROOT/tests/test_branding.sh"
 python3 "$ROOT/tests/test_project_naming.py"
 python3 "$ROOT/tests/test_benchmark_pipeline.py"

@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 
-TOOLS = ("bash", "python3", "cmake", "c++", "g++", "openssl", "sqlite3", "yara", "yr", "strace", "systemctl")
+TOOLS = ("bash", "python3", "cmake", "c++", "g++", "openssl", "sqlite3", "strace", "systemctl")
 
 
 def first_line(command):
@@ -40,8 +40,8 @@ def main():
         "bash": ["bash", "--version"], "python3": ["python3", "--version"],
         "cmake": ["cmake", "--version"], "c++": ["c++", "--version"],
         "g++": ["g++", "--version"], "openssl": ["openssl", "version"],
-        "sqlite3": ["sqlite3", "--version"], "yara": ["yara", "--version"],
-        "yr": ["yr", "--version"], "strace": ["strace", "--version"],
+        "sqlite3": ["sqlite3", "--version"],
+        "strace": ["strace", "--version"],
         "systemctl": ["systemctl", "--version"],
     }
     for name in TOOLS:
@@ -73,7 +73,7 @@ def main():
         "tools": tools,
         "project_files": {
             rel: file_sha256(os.path.join(root, rel))
-            for rel in ("secscope.sh", "modules/profile.sh", "modules/yara.sh", "config/examples/file-scan.config.example")
+            for rel in ("secscope.sh", "modules/profile.sh", "config/examples/file-scan.config.example")
         },
     }
     with open(output, "w", encoding="utf-8") as stream:

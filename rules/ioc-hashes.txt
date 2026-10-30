@@ -1,0 +1,11 @@
+# SecScope 内置恶意文件哈希 IOC 包
+# 格式：每行一个 md5（32位）或 sha256（64位）哈希，# 为注释。
+# 该通道与 file-scan.config 的 MaliciousHashes 键叠加生效；命中即 CRITICAL。
+#
+# 设计原则：本工具的检测主力是行为/结构签名（rules/detect-pack.json），
+# 哈希通道留给组织接入自有威胁情报，避免内置样本哈希过时造成漏检。
+# 组织可将确认的恶意样本哈希追加到本文件（一行一个）。
+#
+# 示例（不会匹配任何文件）：
+# 0123456789abcdef0123456789abcdef
+# 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
